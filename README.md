@@ -9,7 +9,7 @@ Mac 优先的本地 Agent：**本地小模型做全部工作**，远端大模型
 - 作者：Shaffer Wang
 - 许可：[Apache-2.0](LICENSE)（与 Qwen / MLX 生态兼容；不主张第三方商标，见 [NOTICE](NOTICE)）
 - 协议状态：`act` | `ask` | `apply`（`idle` 是附加的本地空转，不问教练）
-- 本机看板：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想
+- 本机看板：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想 / 展开原文 / 空转动手
 
 ## 是什么
 
@@ -23,11 +23,11 @@ Mac 优先的本地 Agent：**本地小模型做全部工作**，远端大模型
 
 升级只发生在：同一工具连败两次、即将 mutate git / 写 remote、用户要求 review、Worker 发出 `unsure`。
 
-发给教练的不是仓库 dump，而是一句说清楚的问题：失败了什么、试过什么、现在需要什么。事件日志是一条轨迹：`work` → `stuck`（带问题）→ `asked_coach` → `coach_instruction` → `resumed`，空转再追加 `thought`。看板 SSE 和磁盘 jsonl 共用这一条，不另起一份日志。
+发给教练的不是仓库 dump，而是一句说清楚的问题：失败了什么、试过什么、现在需要什么。事件日志是一条轨迹：`work` → `stuck`（带问题）→ `asked_coach` → `coach_instruction` → `resumed`，空转再追加 `thought`，需要时还有 `retrieved` / `idle_act`。看板 SSE 和磁盘 jsonl 共用这一条，不另起一份日志。
 
-空转是附加能力，不是闭环的第五步。没待处理的 Ticket、也没在跑工具时，本地 Worker 可以写一句短独白；间隔大约从 5 秒起，加倍直到上限。新目标或进入 `ask` 会把退避清零。空转**不会**打教练；想动工具仍走 `act` 和原来的四条升级条件。
+空转是附加能力，不是闭环的第五步。没待处理的 Ticket、也没在跑工具时，本地 Worker 可以写一句短独白；间隔大约从 5 秒起，加倍直到上限。新目标或进入 `ask` 会把退避清零。空转**不会**打教练；想动工具仍走 `act` 和原来的四条升级条件，并记 `idle_act`。
 
-最近的轨迹原文进 Worker 上下文，更老的在本地分层摘要（不编造记忆，原始 jsonl 不改写）。压缩不问教练。
+最近的轨迹原文进 Worker 上下文，更老的在本地分层摘要（不编造记忆，原始 jsonl 不改写）。摘要可按 seq 展开回原文，注入 Worker 上下文，记 `retrieved`。压缩和展开都不问教练。
 
 ## 本机看板怎么开
 
@@ -48,6 +48,8 @@ local-foreman ui
 - **已收到指示** — 教练的 `continue` / `revise` / `halt` 已回来
 - **继续** — 指示已写入 Worker system prompt，本地接着干
 - **空转中** / **自己在想** — 本地在想，没有问教练。看板默认打开 persist + idle，心思日志会慢慢变长
+- **展开原文** — 把压缩摘要按 seq 取回同一条 jsonl 的原文
+- **空转动手** — 空转选了一个本地小动作，仍走 `act`，没有问教练
 
 没有 API key 也能看：页面会跑一段 mock 演示（先读 README，再假装一次远端写入被拦住，教练回 `continue`，本地继续）。不要在 smoke 里打真实教练接口。
 
@@ -148,6 +150,8 @@ oss-ok
 traj-ok
 idle-ok
 compact-ok
+retrieve-ok
+idle-act-ok
 ```
 
 含义：
@@ -161,6 +165,8 @@ compact-ok
 7. `traj-ok` — 轨迹 jsonl 写盘，已有事件，重启后能读回来
 8. `idle-ok` — 指数退避 + `thought`，全程不打教练
 9. `compact-ok` — 旧条目被摘要，最近几条保持原文
+10. `retrieve-ok` — 压缩摘要能按 seq 展开回原始 jsonl，并注入 Worker 上下文
+11. `idle-act-ok` — 空转可触发本地安全 act，不打教练；远端写入仍走四条升级
 
 GitHub Actions（[`.github/workflows/smoke.yml`](.github/workflows/smoke.yml)）在 Ubuntu + Python 3.11 上只跑这一条 mock smoke。
 

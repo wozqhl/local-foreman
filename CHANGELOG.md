@@ -2,6 +2,15 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.2.1] — 2026-08-26
+
+### Added
+
+- 按 seq 展开压缩摘要：同一条 jsonl 取回原文，注入 Worker 上下文。记 `retrieved`。不走教练。
+- 空转可挑一个本地小动作（read/write/shell），走现有 `act` 和四条升级条件。记 `idle_act`。空转不问教练。
+- 看板同一条心思日志显示 `retrieved` / `idle_act`（展开原文 / 空转动手）。
+- Smoke 新 token：`retrieve-ok`、`idle-act-ok`。原有 token 保留，仍只走 mock。
+
 ## [0.2.0] — 2026-08-26
 
 ### Added

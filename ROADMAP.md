@@ -18,7 +18,9 @@
 - [x] 一条轨迹 jsonl，看板与循环共用
 - [x] 空转本地思考 + 指数退避（不问教练）
 - [x] 分层压缩（只在本地，不编造记忆）
-- [x] Smoke：`traj-ok` / `idle-ok` / `compact-ok`
+- [x] 按 seq 展开摘要（`retrieved`，注入 Worker 上下文）
+- [x] 空转可走本地小动作（`idle_act`，仍守四条升级，不问教练）
+- [x] Smoke：`traj-ok` / `idle-ok` / `compact-ok` / `retrieve-ok` / `idle-act-ok`
 
 ## 0.3 — Worker 更稳
 

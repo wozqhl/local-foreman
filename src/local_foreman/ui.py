@@ -1,10 +1,10 @@
 """Local live board: stdlib HTTP + SSE on 127.0.0.1:8765.
 
 Chinese status: 干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 /
-空转中 / 自己在想.
+空转中 / 自己在想 / 展开原文 / 空转动手.
 Mock demo needs no keys: read → fake escalate → apply continue.
 UI defaults persist+idle ON so the board grows a mind log. Idle never
-asks the coach.
+asks the coach. retrieved / idle_act share the same SSE traj.
 """
 
 from __future__ import annotations
@@ -40,6 +40,8 @@ EVENT_LABELS = {
     "coach_instruction": "已收到指示",
     "resumed": "继续",
     "thought": "自己在想",
+    "retrieved": "展开原文",
+    "idle_act": "空转动手",
 }
 
 
@@ -47,6 +49,10 @@ def state_label(state: str, last_kind: str = "") -> str:
     # Idle is local. Never reuse the coach-consult copy.
     if last_kind == "thought":
         return "自己在想"
+    if last_kind == "idle_act":
+        return "空转动手"
+    if last_kind == "retrieved":
+        return "展开原文"
     if state == "idle":
         return "空转中"
     if last_kind in EVENT_LABELS:
@@ -111,6 +117,10 @@ class LiveBoard:
                 self.state = "apply"
             elif kind == "thought":
                 self.state = "idle"
+            elif kind == "idle_act":
+                self.state = "act"
+            elif kind == "retrieved":
+                pass
             elif kind in {"resumed", "work"}:
                 self.state = "act"
         self._broadcast(self.snapshot())
@@ -195,7 +205,23 @@ def run_demo(
                     kind="done",
                     thought="已按教练指示继续并完成本地工作",
                 ),
-            ]
+            ],
+            think_script=[
+                WorkerAction(
+                    kind="thought",
+                    thought="空转：本地还在，不问教练",
+                ),
+                WorkerAction(
+                    kind="tool",
+                    tool="read",
+                    args={"path": "README.md"},
+                    thought="空转：本地读一眼 README",
+                ),
+                WorkerAction(
+                    kind="thought",
+                    thought="空转：读完继续想，不问教练",
+                ),
+            ],
         )
         coach = MockCoach(["continue"])
 
@@ -361,7 +387,7 @@ def serve_forever(
     httpd, board = make_server(host, port, root)
     actual = httpd.server_address[1]
     print(f"本机看板: http://{host}:{actual}/", flush=True)
-    print("状态：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想", flush=True)
+    print("状态：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想 / 展开原文 / 空转动手", flush=True)
     print("mock 演示无需 API key。空转只在本地想，不问教练。Ctrl+C 退出。", flush=True)
     board.load_traj(default_traj_path(root))
     if auto_demo:

@@ -17,7 +17,8 @@ Tools: read {path}, write {path,content}, shell {cmd}.
 Emit unsure when you cannot proceed safely. Do not push remotes yourself.
 When idle, emit a short local {"kind":"thought"} monologue. Idle thoughts never
 ask the coach. If you want a tool while idle, emit kind=tool; it still goes
-through act and the existing escalate rules.
+through act and the existing escalate rules. Compacted trajectory summaries
+may be expanded back to raw jsonl under ## Retrieved; that is local, not coach.
 """
 
 DEFAULT_MLX_MODEL = "mlx-community/Qwen3-8B-4bit"

@@ -32,6 +32,8 @@ oss-ok
 traj-ok
 idle-ok
 compact-ok
+retrieve-ok
+idle-act-ok
 ```
 
 请不要在 PR 里加入会触发 `mlx_lm.load` 或 `OpenAICoach.advise` 的测试。
@@ -43,7 +45,7 @@ compact-ok
 3. `apply` 必须把 `instruction` 注入下一轮 Worker system prompt。
 4. 新增工具先走 `tools.py` 的 `needs_ask` / `classify_risk`。
 5. 不要在仓库里提交权重、`.env`、真实 API key。
-6. 空转思考不得调用教练。轨迹只有一条 jsonl，不要再开一份平行日志。
+6. 空转思考不得调用教练。空转动手仍走 `act` 和四条升级。展开摘要只读本机 jsonl。轨迹只有一条 jsonl，不要再开一份平行日志。
 
 ## 提交
 

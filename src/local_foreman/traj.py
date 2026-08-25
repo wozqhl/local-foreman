@@ -23,6 +23,8 @@ EVENT_ASKED_COACH = "asked_coach"
 EVENT_COACH_INSTRUCTION = "coach_instruction"
 EVENT_RESUMED = "resumed"
 EVENT_THOUGHT = "thought"
+EVENT_RETRIEVED = "retrieved"
+EVENT_IDLE_ACT = "idle_act"
 
 EVENT_KINDS = (
     EVENT_WORK,
@@ -31,6 +33,8 @@ EVENT_KINDS = (
     EVENT_COACH_INSTRUCTION,
     EVENT_RESUMED,
     EVENT_THOUGHT,
+    EVENT_RETRIEVED,
+    EVENT_IDLE_ACT,
 )
 
 DEFAULT_RECENT = 8
@@ -104,6 +108,16 @@ class Trajectory:
             fh.flush()
         self.entries.append(rec)
         return rec
+
+    def retrieve(
+        self,
+        spec: Optional[dict[str, Any]] = None,
+        *,
+        first_seq: Optional[int] = None,
+        last_seq: Optional[int] = None,
+    ) -> list[dict[str, Any]]:
+        """Expand a compacted summary (or seq span) back to raw jsonl rows."""
+        return retrieve(self.entries, spec, first_seq=first_seq, last_seq=last_seq)
 
 
 def _kind_counts(kinds: dict[str, int]) -> str:
@@ -184,6 +198,52 @@ def compact_entries(
     out = [summarize_entries(chunk) for chunk in reversed(newest_first)]
     out.extend(_verbatim(e) for e in recent_part)
     return out
+
+
+def retrieve(
+    entries: list[dict[str, Any]],
+    spec: Optional[dict[str, Any]] = None,
+    *,
+    first_seq: Optional[int] = None,
+    last_seq: Optional[int] = None,
+) -> list[dict[str, Any]]:
+    """Expand a compacted summary back to the original jsonl rows.
+
+    `spec` is a summary item with `first_seq` / `last_seq`. Does not invent
+    entries; only returns rows already in `entries`. Raw file is not rewritten.
+    """
+    if spec is not None:
+        if first_seq is None:
+            first_seq = spec.get("first_seq")
+        if last_seq is None:
+            last_seq = spec.get("last_seq")
+    if first_seq is None and last_seq is None:
+        return []
+    try:
+        lo = None if first_seq is None else int(first_seq)
+        hi = None if last_seq is None else int(last_seq)
+    except (TypeError, ValueError):
+        return []
+    out: list[dict[str, Any]] = []
+    for e in entries:
+        try:
+            seq = int(e.get("seq"))
+        except (TypeError, ValueError):
+            continue
+        if lo is not None and seq < lo:
+            continue
+        if hi is not None and seq > hi:
+            continue
+        out.append(e)
+    return out
+
+
+def retrieve_from_summary(
+    summary: dict[str, Any],
+    entries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Convenience: expand one compacted summary item to raw jsonl rows."""
+    return retrieve(entries, summary)
 
 
 def render_compacted(

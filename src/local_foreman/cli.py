@@ -17,9 +17,15 @@ from pathlib import Path
 from typing import Optional
 
 from local_foreman.coach import MockCoach
-from local_foreman.loop import COACH_INSTRUCTION_HEADER, ENV_PERSIST, ForemanLoop, env_flag
+from local_foreman.loop import (
+    COACH_INSTRUCTION_HEADER,
+    ENV_PERSIST,
+    RETRIEVED_CONTEXT_HEADER,
+    ForemanLoop,
+    env_flag,
+)
 from local_foreman.ticket import problem_is_clear
-from local_foreman.traj import Trajectory, compact_entries
+from local_foreman.traj import Trajectory, compact_entries, retrieve, retrieve_from_summary
 from local_foreman.worker import MockWorker, WorkerAction
 
 
@@ -65,7 +71,7 @@ def run_goal(
 def run_ui(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="local-foreman ui",
-        description="本机看板：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想",
+        description="本机看板：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想 / 展开原文 / 空转动手",
     )
     parser.add_argument(
         "--host",
@@ -125,6 +131,9 @@ def _smoke_ui(root: Path, errors: list[str]) -> None:
             return
         if "求助中（正在咨询大模型）" not in body:
             errors.append("ui-ok: HTML missing consult copy")
+            return
+        if "展开原文" not in body or "空转动手" not in body:
+            errors.append("ui-ok: HTML missing retrieved/idle-act copy")
             return
         with urllib.request.urlopen(base + "/demo?sync=1", timeout=8) as resp:
             demo = json.loads(resp.read().decode("utf-8"))
@@ -318,6 +327,188 @@ def _smoke_compact(errors: list[str]) -> None:
     print("compact-ok")
 
 
+def _smoke_retrieve(root: Path, errors: list[str]) -> None:
+    entries = [
+        {"kind": "work", "message": f"step-{i}", "seq": i}
+        for i in range(30)
+    ]
+    compacted = compact_entries(entries, recent=4, layer=4)
+    summaries = [
+        x for x in compacted if x.get("role") == "summary" or x.get("kind") == "summary"
+    ]
+    if not summaries:
+        errors.append("retrieve-ok: no summary to expand")
+        return
+    oldest = summaries[0]
+    try:
+        first = int(oldest["first_seq"])
+        last = int(oldest["last_seq"])
+    except (KeyError, TypeError, ValueError):
+        errors.append("retrieve-ok: summary missing first_seq/last_seq")
+        return
+    raw = retrieve(entries, oldest)
+    expected = [e for e in entries if first <= int(e["seq"]) <= last]
+    if not raw:
+        errors.append("retrieve-ok: expand returned empty")
+        return
+    if [e.get("seq") for e in raw] != [e.get("seq") for e in expected]:
+        errors.append("retrieve-ok: seq mismatch " + str([e.get("seq") for e in raw]))
+        return
+    if [e.get("message") for e in raw] != [e.get("message") for e in expected]:
+        errors.append("retrieve-ok: raw messages diverge from jsonl")
+        return
+    if any(e.get("role") == "summary" or e.get("kind") == "summary" for e in raw):
+        errors.append("retrieve-ok: expand returned summaries, not raw jsonl")
+        return
+    newest = summaries[-1]
+    raw_n = retrieve_from_summary(newest, entries)
+    try:
+        nf, nl = int(newest["first_seq"]), int(newest["last_seq"])
+    except (KeyError, TypeError, ValueError):
+        errors.append("retrieve-ok: newest summary missing seq span")
+        return
+    exp_n = [e for e in entries if nf <= int(e["seq"]) <= nl]
+    if [e.get("message") for e in raw_n] != [e.get("message") for e in exp_n]:
+        errors.append("retrieve-ok: newest summary expand mismatch")
+        return
+    if retrieve(entries, {"first_seq": 1000, "last_seq": 1005}):
+        errors.append("retrieve-ok: invented entries outside jsonl")
+        return
+
+    tmp = Path(tempfile.mkdtemp(prefix="lf-retrieve-"))
+    path = tmp / "traj.jsonl"
+    seeded = Trajectory(path, goal="seed")
+    for i in range(20):
+        seeded.append({"kind": "work", "message": f"seed-{i}"})
+    worker = MockWorker(script=[
+        WorkerAction(kind="done", thought="after retrieve"),
+    ])
+    coach = MockCoach(["halt"])
+    loop = ForemanLoop(
+        worker=worker,
+        coach=coach,
+        root=root,
+        max_steps=6,
+        persist=True,
+        idle=False,
+        traj_path=path,
+    )
+    res = loop.run("smoke: retrieve expand")
+    if coach.calls:
+        errors.append("retrieve-ok: retrieve path called coach")
+        return
+    kinds = [e.get("kind") for e in res.events]
+    if "retrieved" not in kinds:
+        errors.append("retrieve-ok: loop did not emit retrieved got=" + str(kinds))
+        return
+    if RETRIEVED_CONTEXT_HEADER not in (worker.last_system or ""):
+        errors.append("retrieve-ok: worker context missing retrieved raw section")
+        return
+    if "seed-0" not in (worker.last_system or "") and "seed-" not in (worker.last_system or ""):
+        errors.append("retrieve-ok: worker context missing expanded raw messages")
+        return
+    loaded = Trajectory(path)
+    if not any(e.get("kind") == "retrieved" for e in loaded.entries):
+        errors.append("retrieve-ok: retrieved not on the one traj")
+        return
+    print("retrieve-ok")
+
+
+def _smoke_idle_act(root: Path, errors: list[str]) -> None:
+    tmp = Path(tempfile.mkdtemp(prefix="lf-idle-act-"))
+    path = tmp / "traj.jsonl"
+    worker = MockWorker(
+        script=[WorkerAction(kind="done", thought="go idle")],
+        think_script=[
+            WorkerAction(
+                kind="tool",
+                tool="read",
+                args={"path": "README.md"},
+                thought="空转：本地读一眼 README",
+            ),
+            WorkerAction(kind="thought", thought="空转：读完继续想，不问教练"),
+        ],
+    )
+    coach = MockCoach(["halt"])
+    loop = ForemanLoop(
+        worker=worker,
+        coach=coach,
+        root=root,
+        max_steps=16,
+        persist=True,
+        idle=True,
+        idle_start=0.0,
+        idle_cap=1.0,
+        idle_max=2,
+        traj_path=path,
+        sleeper=lambda _s: None,
+    )
+    res = loop.run("smoke: idle local act")
+    if coach.calls:
+        errors.append("idle-act-ok: local-safe idle-act called coach")
+        return
+    if "ask" in res.states or "apply" in res.states:
+        errors.append("idle-act-ok: local-safe leaked to coach states=" + str(res.states))
+        return
+    kinds = [e.get("kind") for e in res.events]
+    if "idle_act" not in kinds:
+        errors.append("idle-act-ok: missing idle_act event got=" + str(kinds))
+        return
+    if "thought" not in kinds:
+        errors.append("idle-act-ok: missing thought got=" + str(kinds))
+        return
+    works = [e for e in res.events if e.get("kind") == "work"]
+    if not any("read" in str(e.get("message") or "") for e in works):
+        errors.append("idle-act-ok: idle-act did not run through act/read")
+        return
+    if "idle" not in res.states or "act" not in res.states:
+        errors.append("idle-act-ok: states=" + str(res.states))
+        return
+    loaded = Trajectory(path)
+    if not any(e.get("kind") == "idle_act" for e in loaded.entries):
+        errors.append("idle-act-ok: idle_act not on the one traj")
+        return
+
+    # Four escalate rules still apply when idle picks a remote write.
+    push_cmd = "git " + "push" + " origin HEAD"
+    worker2 = MockWorker(
+        script=[WorkerAction(kind="done", thought="go idle")],
+        think_script=[
+            WorkerAction(
+                kind="tool",
+                tool="shell",
+                args={"cmd": push_cmd},
+                thought="空转：想推远端",
+            ),
+        ],
+    )
+    coach2 = MockCoach(["continue"])
+    loop2 = ForemanLoop(
+        worker=worker2,
+        coach=coach2,
+        root=root,
+        max_steps=16,
+        persist=True,
+        idle=True,
+        idle_start=0.0,
+        idle_max=1,
+        traj_path=tmp / "traj2.jsonl",
+        sleeper=lambda _s: None,
+    )
+    res2 = loop2.run("smoke: idle-act escalate")
+    kinds2 = [e.get("kind") for e in res2.events]
+    if "idle_act" not in kinds2:
+        errors.append("idle-act-ok: escalate path missing idle_act got=" + str(kinds2))
+        return
+    if "ask" not in res2.states:
+        errors.append("idle-act-ok: remote idle-act skipped escalate states=" + str(res2.states))
+        return
+    if not coach2.calls:
+        errors.append("idle-act-ok: escalate path never asked via act")
+        return
+    print("idle-act-ok")
+
+
 def run_smoke() -> int:
     root = Path(__file__).resolve().parents[2]
     errors = []
@@ -401,6 +592,8 @@ def run_smoke() -> int:
     _smoke_traj(root, errors)
     _smoke_idle(root, errors)
     _smoke_compact(errors)
+    _smoke_retrieve(root, errors)
+    _smoke_idle_act(root, errors)
 
     if errors:
         for e in errors:

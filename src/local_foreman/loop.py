@@ -1,9 +1,12 @@
 """Main loop: act -> (escalate) ask -> apply -> act.
 
 Event log (one jsonl trajectory): work / stuck+problem / asked_coach /
-coach_instruction / resumed / thought.
-Idle local think is extra: never calls the coach. After apply, the worker
-MUST continue with the coach instruction in its system prompt.
+coach_instruction / resumed / thought / retrieved / idle_act.
+Idle local think is extra: never calls the coach. It may pick a tiny
+local tool and still go through act + the four escalate rules.
+Compacted summaries can be expanded back to raw jsonl for worker context.
+After apply, the worker MUST continue with the coach instruction in its
+system prompt.
 """
 
 from __future__ import annotations
@@ -25,15 +28,20 @@ from local_foreman.state import (
 from local_foreman.ticket import Ticket, build_problem, validate_ticket
 from local_foreman.tools import execute, needs_ask
 from local_foreman.traj import (
+    DEFAULT_RECENT,
     EVENT_ASKED_COACH,
     EVENT_COACH_INSTRUCTION,
+    EVENT_IDLE_ACT,
+    EVENT_RETRIEVED,
     EVENT_RESUMED,
     EVENT_STUCK,
     EVENT_THOUGHT,
     EVENT_WORK,
     Trajectory,
+    compact_entries,
     default_traj_path,
     render_compacted,
+    retrieve,
     utc_now,
 )
 from local_foreman.worker import WORKER_SYSTEM, Worker, WorkerAction, make_worker
@@ -43,6 +51,7 @@ REVIEW_HINTS = ("review", "please review", "ask coach", "look this over")
 
 COACH_INSTRUCTION_HEADER = "## Coach instruction (must follow)"
 TRAJ_CONTEXT_HEADER = "## Trajectory (compacted, local)"
+RETRIEVED_CONTEXT_HEADER = "## Retrieved (raw jsonl, local)"
 
 ENV_PERSIST = "LOCAL_FOREMAN_PERSIST"
 ENV_IDLE_START = "LOCAL_FOREMAN_IDLE_START"
@@ -135,6 +144,8 @@ class ForemanLoop:
         self._idle_count = 0
         self._carry_action: Optional[WorkerAction] = None
         self._seq = 0
+        self._retrieved_span: Optional[tuple[int, int]] = None
+        self._retrieved_entries: list[dict] = []
 
     def _reset_backoff(self) -> None:
         self._idle_interval = self.idle_start
@@ -153,12 +164,63 @@ class ForemanLoop:
             compacted = render_compacted(self.traj.entries)
             if compacted:
                 parts.append(TRAJ_CONTEXT_HEADER + "\n" + compacted)
+            if self._retrieved_entries:
+                lines = []
+                for e in self._retrieved_entries:
+                    kind = e.get("kind") or "event"
+                    msg = e.get("message") or ""
+                    lines.append(f"{kind}: {msg}".rstrip())
+                body = "\n".join(line for line in lines if line)
+                if body:
+                    parts.append(RETRIEVED_CONTEXT_HEADER + "\n" + body)
         return "\n\n".join(parts)
 
     def _history_for_worker(self, result: RunResult) -> list[dict]:
         if self.persist and self.traj is not None and self.traj.entries:
-            return list(self.traj.entries)
+            recent = list(self.traj.entries[-DEFAULT_RECENT:])
+            if not self._retrieved_entries:
+                return recent
+            seen = {e.get("seq") for e in recent}
+            extra = [e for e in self._retrieved_entries if e.get("seq") not in seen]
+            return extra + recent
         return result.history
+
+    def _maybe_retrieve(self, result: RunResult) -> None:
+        """Expand the newest compacted summary back to raw jsonl for the worker.
+
+        Once per run. Never calls the coach. Same traj / SSE log.
+        """
+        if self._retrieved_entries:
+            return
+        if not self.persist or self.traj is None or not self.traj.entries:
+            return
+        compacted = compact_entries(self.traj.entries)
+        summaries = [
+            x
+            for x in compacted
+            if x.get("role") == "summary" or x.get("kind") == "summary"
+        ]
+        if not summaries:
+            return
+        newest = summaries[-1]
+        raw = retrieve(self.traj.entries, newest)
+        if not raw:
+            return
+        try:
+            first = int(newest.get("first_seq"))
+            last = int(newest.get("last_seq"))
+        except (TypeError, ValueError):
+            first = raw[0].get("seq")
+            last = raw[-1].get("seq")
+        self._retrieved_span = (first, last) if first is not None and last is not None else None
+        self._retrieved_entries = raw
+        state = result.states[-1] if result.states else State.ACT.value
+        self._emit(
+            result,
+            EVENT_RETRIEVED,
+            f"展开原文 seq {first}-{last}（{len(raw)} 条）",
+            state=state,
+        )
 
     def _user_wants_review(self, goal: str) -> bool:
         if self.user_review:
@@ -375,11 +437,18 @@ class ForemanLoop:
             )
         self._idle_count += 1
         if action.kind == "tool":
-            # Still a thought in the log, then act + escalate rules.
+            # Thought stays on the mind log, then idle_act → act + four rules.
+            thought = action.thought or action.describe()
             self._emit(
                 result,
                 EVENT_THOUGHT,
-                action.thought or action.describe(),
+                thought,
+                state=State.IDLE.value,
+            )
+            self._emit(
+                result,
+                EVENT_IDLE_ACT,
+                action.describe(),
                 state=State.IDLE.value,
             )
             return action
@@ -401,6 +470,8 @@ class ForemanLoop:
         self._reset_backoff()
         self._idle_count = 0
         self._carry_action = None
+        self._retrieved_span = None
+        self._retrieved_entries = []
         state = State.ACT
         fail_streak = 0
         failed_logs: list[str] = []
@@ -433,6 +504,7 @@ class ForemanLoop:
                 self._sleep(self.pace)
 
             if state == State.ACT:
+                self._maybe_retrieve(result)
                 if self._carry_action is not None:
                     action = self._carry_action
                     self._carry_action = None
@@ -521,11 +593,13 @@ class ForemanLoop:
                     if not result.done_reason:
                         result.done_reason = "idle_max"
                     break
+                self._maybe_retrieve(result)
                 carry = self._idle_think(result, goal)
                 if carry is not None:
+                    # Do the local act before idle_max can stop the loop.
                     self._carry_action = carry
                     state = State.ACT
-                # else stay idle; next loop iteration waits again
+                    continue
                 if self.idle_max is not None and self._idle_count >= self.idle_max:
                     if not result.done_reason:
                         result.done_reason = "idle_max"

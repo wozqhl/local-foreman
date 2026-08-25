@@ -13,11 +13,11 @@ Local 干活。遇到问题先把问题说清楚，再问 Coach。Coach 只出�
 | `act` | Worker（本地 Qwen3-8B / mock） | 选一个 tool 或 `done` / `unsure` |
 | `ask` | Local → Coach | 只发一张带 `problem` 的 Ticket |
 | `apply` | Local | 把 Coach 的 `instruction` 注入下一轮 Worker system prompt，再按 verdict 走 |
-| `idle` | Worker（本地） | 附加状态。短 `thought`，指数退避。不升级、不打教练 |
+| `idle` | Worker（本地） | 附加状态。短 `thought`，指数退避。可挑一个本地小动作再进 `act`。空转本身不打教练 |
 
 循环：`act` →（升级条件）→ `ask` → `apply` → `act`。`halt` 在 `apply` 结束。`idle` 不进入这条闭环。
 
-事件日志（一条 append-only jsonl，看板 SSE 与轨迹共用）：`work` / `stuck`（带 problem） / `asked_coach` / `coach_instruction` / `resumed` / `thought`（空转独白）。
+事件日志（一条 append-only jsonl，看板 SSE 与轨迹共用）：`work` / `stuck`（带 problem） / `asked_coach` / `coach_instruction` / `resumed` / `thought`（空转独白） / `retrieved`（展开压缩摘要） / `idle_act`（空转选中的本地小动作）。
 
 ## 何时升级（仅这些）
 
@@ -28,7 +28,7 @@ Local 干活。遇到问题先把问题说清楚，再问 Coach。Coach 只出�
 
 `git push` / remote write **必须**先 `ask`，禁止在 `act` 里直接执行。
 
-空转思考 **不是** 第五条升级条件。Idle thinking MUST NEVER call the coach。空转里如果要动工具，仍走 `act` + 上面四条。
+空转思考 **不是** 第五条升级条件。Idle thinking MUST NEVER call the coach。空转里如果要动工具，仍走 `act` + 上面四条，并记一条 `idle_act`。
 
 ## 轨迹
 
@@ -43,7 +43,7 @@ Local 干活。遇到问题先把问题说清楚，再问 Coach。Coach 只出�
 
 ## 分层压缩（只在本地）
 
-最近的轨迹原文进入 Worker 上下文；更老的按层摘要。摘要只复述已有的 `kind` + `message`，不编造记忆。原始 jsonl 不改写，以后还可以按 seq 展开。压缩不走远程教练。
+最近的轨迹原文进入 Worker 上下文；更老的按层摘要。摘要只复述已有的 `kind` + `message`，不编造记忆。原始 jsonl 不改写。摘要带 `first_seq` / `last_seq`，可从同一条 jsonl 取回原文，注入 Worker 上下文，并记一条 `retrieved`。压缩和展开都不走远程教练。
 
 ## Ticket（Local → Coach）
 
@@ -78,7 +78,7 @@ Local **必须**把 `instruction` 写进下一轮 Worker system prompt（`## Coa
 
 ## 本机看板
 
-`python -m local_foreman ui` 在 `127.0.0.1:8765` 用 stdlib HTTP + SSE 展示：目标、当前状态、最后问题、教练指示、心思、事件日志。中文状态：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想。空转不得写成正在咨询大模型。
+`python -m local_foreman ui` 在 `127.0.0.1:8765` 用 stdlib HTTP + SSE 展示：目标、当前状态、最后问题、教练指示、心思、事件日志。中文状态：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想 / 展开原文 / 空转动手。空转、展开原文、空转动手都不得写成正在咨询大模型。
 
 ## Tools v1
 
