@@ -1,0 +1,3 @@
+# Runtime: stdlib only. mock smoke needs nothing extra.
+# Optional on Apple Silicon:
+# mlx-lm
