@@ -1,4 +1,4 @@
-"""CLI: python -m local_foreman [goal] | --smoke"""
+"""CLI: python -m local_foreman "goal" | local-foreman "goal" | --smoke"""
 
 from __future__ import annotations
 
@@ -17,8 +17,16 @@ def _root() -> Path:
     return Path(env) if env else Path.cwd()
 
 
-def run_goal(goal: str) -> int:
-    loop = ForemanLoop(root=_root())
+def run_goal(goal: str, *, user_review: bool = False, max_steps: int = 12) -> int:
+    def on_state(name: str) -> None:
+        print(name, flush=True)
+
+    loop = ForemanLoop(
+        root=_root(),
+        user_review=user_review,
+        max_steps=max_steps,
+        on_state=on_state,
+    )
     result = loop.run(goal)
     print("done=" + result.done_reason)
     print("states=" + " > ".join(result.states))
@@ -26,6 +34,8 @@ def run_goal(goal: str) -> int:
         print("verdicts=" + ",".join(result.verdicts))
     if result.last_instruction:
         print("instruction=" + result.last_instruction)
+    if result.done_reason.startswith("halt"):
+        return 1
     return 0
 
 
@@ -95,6 +105,9 @@ def run_smoke() -> int:
     else:
         errors.append("apply verdicts seen=" + str(seen))
 
+    if (root / "LICENSE").is_file() and (root / ".github" / "workflows" / "smoke.yml").is_file():
+        print("oss-ok")
+
     if errors:
         for e in errors:
             print("SMOKE FAIL: " + e, file=sys.stderr)
@@ -103,23 +116,42 @@ def run_smoke() -> int:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(prog="local_foreman")
+    parser = argparse.ArgumentParser(
+        prog="local-foreman",
+        description="Mac-first local agent: the local worker does the work; the remote coach only guides.",
+    )
     parser.add_argument("goal", nargs="*", help="one goal for the local worker")
     parser.add_argument("--smoke", action="store_true", help="run mock act/ask/apply checks")
     parser.add_argument("--review", action="store_true", help="force ask (user asked for review)")
+    parser.add_argument(
+        "--worker",
+        choices=("mock", "mlx"),
+        help="worker backend (default: $LOCAL_FOREMAN_WORKER or mock)",
+    )
+    parser.add_argument(
+        "--coach",
+        choices=("mock", "openai"),
+        help="coach backend (default: $LOCAL_FOREMAN_COACH or mock)",
+    )
+    parser.add_argument("--max-steps", type=int, default=12, metavar="N")
     args = parser.parse_args(argv)
+
+    if args.worker:
+        os.environ["LOCAL_FOREMAN_WORKER"] = args.worker
+    if args.coach:
+        os.environ["LOCAL_FOREMAN_COACH"] = args.coach
+
     if args.smoke:
-        os.environ.setdefault("LOCAL_FOREMAN_WORKER", "mock")
-        os.environ.setdefault("LOCAL_FOREMAN_COACH", "mock")
+        os.environ["LOCAL_FOREMAN_WORKER"] = "mock"
+        os.environ["LOCAL_FOREMAN_COACH"] = "mock"
         return run_smoke()
+
     goal = " ".join(args.goal).strip()
     if not goal:
         parser.print_help()
         return 2
-    if args.review:
-        loop = ForemanLoop(root=_root(), user_review=True)
-        result = loop.run(goal)
-        print("done=" + result.done_reason)
-        print("states=" + " > ".join(result.states))
-        return 0
-    return run_goal(goal)
+    try:
+        return run_goal(goal, user_review=args.review, max_steps=args.max_steps)
+    except (RuntimeError, ValueError) as exc:
+        print("error: " + str(exc), file=sys.stderr)
+        return 1

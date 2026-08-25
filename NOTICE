@@ -1,0 +1,23 @@
+Local Foreman
+Copyright 2026 Shaffer Wang
+
+This product is an independent open-source project. It is not a clone,
+fork, or product of Cursor, xAI, Grok Bot, or any hosted coding agent.
+The act / ask / apply loop, ticket protocol, and tooling in this
+repository are original to Local Foreman.
+
+Optional local inference uses the mlx-lm library (Apple MLX ecosystem)
+and may load community-distributed weights such as:
+
+    mlx-community/Qwen3-8B-4bit
+
+Those weights, names, and marks belong to their respective owners,
+including the Qwen project and mlx-community contributors. Local Foreman
+does not claim those marks and is not affiliated with, endorsed by, or
+sponsored by Alibaba, the Qwen team, Apple, mlx-community, OpenAI, or
+any coach API vendor.
+
+See LICENSE for the Apache License 2.0 terms that apply to this
+repository's own source code. Third-party model weights and libraries
+remain under their own licenses; review those terms before you download
+or redistribute them.

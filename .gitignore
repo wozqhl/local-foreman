@@ -7,3 +7,11 @@ dist/
 build/
 .pytest_cache/
 .python-version
+.env
+.env.*
+!.env.example
+.DS_Store
+.cache/
+huggingface/
+*.safetensors
+*.mlx

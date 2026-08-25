@@ -42,6 +42,7 @@ class ForemanLoop:
         root: Optional[Path] = None,
         max_steps: int = 12,
         user_review: bool = False,
+        on_state=None,
     ):
         self.worker = worker or make_worker()
         self.coach = coach or make_coach()
@@ -49,6 +50,7 @@ class ForemanLoop:
         self.max_steps = max_steps
         self.user_review = user_review
         self.coach_instruction: str = ""
+        self.on_state = on_state
 
     def _system(self) -> str:
         parts = [WORKER_SYSTEM]
@@ -100,6 +102,8 @@ class ForemanLoop:
         while steps < self.max_steps:
             steps += 1
             result.states.append(state.value)
+            if self.on_state:
+                self.on_state(state.value)
 
             if state == State.ACT:
                 action = self.worker.step(

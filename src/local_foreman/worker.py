@@ -1,4 +1,4 @@
-"""Worker protocol + mock + mlx stub (mlx import optional)."""
+"""Worker protocol + mock + real MLX adapter (mlx-lm import optional)."""
 
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ Reply with one JSON object, no markdown:
 Tools: read {path}, write {path,content}, shell {cmd}.
 Emit unsure when you cannot proceed safely. Do not push remotes yourself.
 """
+
+DEFAULT_MLX_MODEL = "mlx-community/Qwen3-8B-4bit"
 
 
 @dataclass
@@ -35,19 +37,28 @@ class Worker(Protocol):
         ...
 
 
-def parse_action(raw: str) -> WorkerAction:
-    text = raw.strip()
+def extract_json_object(raw: str) -> Optional[dict[str, Any]]:
+    """Pull the first JSON object out of messy model or API text."""
+    text = (raw or "").strip()
     if text.startswith("```"):
         lines = text.splitlines()
         text = "\n".join(lines[1:-1] if lines[-1].startswith("```") else lines[1:])
     start = text.find("{")
     end = text.rfind("}")
     if start < 0 or end < 0:
-        return WorkerAction(kind="unsure", thought=text[:200] or "unparseable")
+        return None
     try:
         data = json.loads(text[start : end + 1])
     except json.JSONDecodeError:
-        return WorkerAction(kind="unsure", thought="invalid json")
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def parse_action(raw: str) -> WorkerAction:
+    data = extract_json_object(raw)
+    if data is None:
+        text = (raw or "").strip()
+        return WorkerAction(kind="unsure", thought=(text[:200] or "unparseable"))
     kind = str(data.get("kind") or "unsure")
     if kind not in {"tool", "done", "unsure"}:
         kind = "unsure"
@@ -94,15 +105,25 @@ class MockWorker:
 
 
 class MlxWorker:
-    """Apple Silicon adapter. Does not import mlx until first step."""
+    """Apple Silicon worker. Loads mlx-lm once; import is deferred until first step.
 
-    MODEL_ID = "mlx-community/Qwen3-8B-4bit"
+    Default weights: mlx-community/Qwen3-8B-4bit (override with LOCAL_FOREMAN_MLX_MODEL).
+    Construction is cheap and does not download. Smoke must never call step() on this class.
+    """
 
-    def __init__(self, model_id: str = MODEL_ID):
-        self.model_id = model_id
+    DEFAULT_MODEL = DEFAULT_MLX_MODEL
+
+    def __init__(self, model_id: Optional[str] = None, max_tokens: int = 512):
+        self.model_id = (
+            model_id
+            or os.environ.get("LOCAL_FOREMAN_MLX_MODEL")
+            or self.DEFAULT_MODEL
+        )
+        self.max_tokens = max_tokens
         self._model = None
         self._tokenizer = None
         self._generate = None
+        self.last_system: str = ""
 
     def _ensure(self) -> None:
         if self._model is not None:
@@ -111,27 +132,70 @@ class MlxWorker:
             from mlx_lm import generate, load  # type: ignore
         except ImportError as exc:
             raise RuntimeError(
-                "mlx-lm is not installed. Worker=mlx needs Apple Silicon. "
-                "Set LOCAL_FOREMAN_WORKER=mock on this machine."
+                "mlx-lm is not installed. On Apple Silicon run: "
+                "pip install 'local-foreman[mlx]'. "
+                "On this machine use --worker mock or LOCAL_FOREMAN_WORKER=mock."
             ) from exc
-        # load() may download weights — never call this from smoke.
+        # load() may download weights — never call step() / _ensure() from smoke.
         self._model, self._tokenizer = load(self.model_id)
         self._generate = generate
 
-    def step(self, *, goal: str, system: str, history: list[dict]) -> WorkerAction:
-        self._ensure()
-        prompt = system + "\n\nGoal: " + goal
+    def _prompt(self, *, goal: str, system: str, history: list[dict]) -> str:
+        user_parts = ["Goal: " + goal]
         if history:
-            prompt += "\n\nHistory:\n" + json.dumps(history[-6:], ensure_ascii=False)
-        prompt += "\n\nJSON action:"
-        raw = self._generate(self._model, self._tokenizer, prompt=prompt, max_tokens=256)
-        return parse_action(raw if isinstance(raw, str) else str(raw))
+            user_parts.append(
+                "Recent history:\n" + json.dumps(history[-6:], ensure_ascii=False)
+            )
+        user_parts.append("Reply with one JSON action now.")
+        user = "\n\n".join(user_parts)
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        tok = self._tokenizer
+        if (
+            tok is not None
+            and getattr(tok, "chat_template", None)
+            and hasattr(tok, "apply_chat_template")
+        ):
+            kwargs: dict[str, Any] = {"tokenize": False, "add_generation_prompt": True}
+            try:
+                return tok.apply_chat_template(messages, enable_thinking=False, **kwargs)
+            except TypeError:
+                try:
+                    return tok.apply_chat_template(messages, **kwargs)
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        return system + "\n\n" + user + "\n\nJSON action:"
+
+    def _call_generate(self, prompt: str) -> str:
+        try:
+            raw = self._generate(
+                self._model,
+                self._tokenizer,
+                prompt=prompt,
+                max_tokens=self.max_tokens,
+            )
+        except TypeError:
+            raw = self._generate(self._model, self._tokenizer, prompt)
+        return raw if isinstance(raw, str) else str(raw)
+
+    def step(self, *, goal: str, system: str, history: list[dict]) -> WorkerAction:
+        self.last_system = system
+        self._ensure()
+        prompt = self._prompt(goal=goal, system=system, history=history)
+        return parse_action(self._call_generate(prompt))
 
 
-def make_worker(script: Optional[list[WorkerAction]] = None) -> Worker:
-    backend = os.environ.get("LOCAL_FOREMAN_WORKER", "mock").strip().lower()
-    if backend == "mock":
+def make_worker(
+    script: Optional[list[WorkerAction]] = None,
+    backend: Optional[str] = None,
+) -> Worker:
+    name = (backend or os.environ.get("LOCAL_FOREMAN_WORKER") or "mock").strip().lower()
+    if name == "mock":
         return MockWorker(script=script)
-    if backend == "mlx":
+    if name == "mlx":
         return MlxWorker()
-    raise ValueError(f"unknown LOCAL_FOREMAN_WORKER={backend!r} (mock|mlx)")
+    raise ValueError(f"unknown LOCAL_FOREMAN_WORKER={name!r} (mock|mlx)")

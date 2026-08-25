@@ -8,12 +8,17 @@ import urllib.error
 import urllib.request
 from typing import Optional, Protocol
 
+from local_foreman import __version__
 from local_foreman.ticket import CoachReply, Ticket, validate_reply
+from local_foreman.worker import extract_json_object
 
 COACH_SYSTEM = """You are a remote coach. You do not do the work.
 Reply with JSON only: {"verdict":"continue|revise|halt","instruction":"1-2 sentences","next_tool":optional}
 No repo dump. Guide or correct. halt if the local plan is unsafe.
 """
+
+USER_AGENT = f"local-foreman/{__version__}"
+DEFAULT_TIMEOUT_SEC = 10
 
 
 class Coach(Protocol):
@@ -52,22 +57,35 @@ class MockCoach:
 
 
 class OpenAICoach:
-    """OpenAI-compatible chat completions client (base_url + api_key env)."""
+    """OpenAI-compatible chat completions client.
+
+    Works with any OpenAI-style base_url (OpenAI, DeepSeek, OpenRouter, local
+    gateways, …). Smoke must never call advise() — use MockCoach instead.
+    """
 
     def __init__(
         self,
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
+        timeout: float = DEFAULT_TIMEOUT_SEC,
     ):
-        self.base_url = (base_url or os.environ.get("COACH_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+        self.base_url = (
+            base_url or os.environ.get("COACH_BASE_URL") or "https://api.openai.com/v1"
+        ).rstrip("/")
         self.api_key = api_key or os.environ.get("COACH_API_KEY") or ""
         self.model = model or os.environ.get("COACH_MODEL") or "gpt-4o"
+        self.timeout = timeout
+
+    def _completions_url(self) -> str:
+        if self.base_url.endswith("/chat/completions"):
+            return self.base_url
+        return self.base_url + "/chat/completions"
 
     def advise(self, ticket: Ticket) -> CoachReply:
         if not self.api_key:
             raise RuntimeError("COACH_API_KEY is empty; use LOCAL_FOREMAN_COACH=mock for smoke")
-        url = self.base_url + "/chat/completions"
+        url = self._completions_url()
         body = {
             "model": self.model,
             "temperature": 0,
@@ -82,26 +100,40 @@ class OpenAICoach:
             headers={
                 "Authorization": "Bearer " + self.api_key,
                 "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": USER_AGENT,
             },
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:300]
+            raise RuntimeError(f"coach HTTP {exc.code}: {detail}") from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"coach HTTP failed: {exc}") from exc
-        content = payload["choices"][0]["message"]["content"]
+        except TimeoutError as exc:
+            raise RuntimeError(f"coach timed out after {self.timeout}s") from exc
+
+        try:
+            content = payload["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError("coach response missing choices[0].message.content") from exc
         text = content if isinstance(content, str) else json.dumps(content)
-        start, end = text.find("{"), text.rfind("}")
-        if start < 0 or end < 0:
+        data = extract_json_object(text)
+        if not data:
             raise RuntimeError("coach returned no JSON object")
-        return validate_reply(CoachReply.from_dict(json.loads(text[start : end + 1])))
+        return validate_reply(CoachReply.from_dict(data))
 
 
-def make_coach(verdicts: Optional[list[str]] = None) -> Coach:
-    backend = os.environ.get("LOCAL_FOREMAN_COACH", "mock").strip().lower()
-    if backend == "mock":
+def make_coach(
+    verdicts: Optional[list[str]] = None,
+    backend: Optional[str] = None,
+) -> Coach:
+    name = (backend or os.environ.get("LOCAL_FOREMAN_COACH") or "mock").strip().lower()
+    if name == "mock":
         return MockCoach(verdicts=verdicts)
-    if backend == "openai":
+    if name == "openai":
         return OpenAICoach()
-    raise ValueError(f"unknown LOCAL_FOREMAN_COACH={backend!r} (mock|openai)")
+    raise ValueError(f"unknown LOCAL_FOREMAN_COACH={name!r} (mock|openai)")
