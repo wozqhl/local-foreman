@@ -2,23 +2,56 @@
 
 Mac 优先的本地 Agent：**本地小模型做全部工作**，远端大模型只当教练（引导 / 纠正），不亲手改仓库。
 
+完整闭环：**本地模型干活 → 遇到问题，把当前问题表述清楚 → 询问大模型 → 大模型给出相关指示 → 本地模型带着指示继续干活。**
+
 本仓库是独立开源项目，**不是 Cursor、Grok Bot 或任何托管编程 Agent 的克隆**。协议是自己的 `act` → `ask` → `apply`，见 [protocol.md](protocol.md)。
 
 - 作者：Shaffer Wang
 - 许可：[Apache-2.0](LICENSE)（与 Qwen / MLX 生态兼容；不主张第三方商标，见 [NOTICE](NOTICE)）
 - 协议状态：`act` | `ask` | `apply`
+- 本机看板：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续
 
 ## 是什么
 
 | 角色 | 谁 | 职责 |
 | --- | --- | --- |
 | Worker | 本机 `mlx-lm`（默认 Qwen3-8B 4bit）或 mock | 选工具、读改文件、跑本地命令 |
-| Local loop | 本仓库 | 决定何时升级；拦住 `git push` / 远端写入 |
-| Coach | 任意 OpenAI 兼容 HTTP API，或 mock | 只回一张短 JSON：`continue` / `revise` / `halt` |
+| Local loop | 本仓库 | 决定何时升级；拦住 `git push` / 远端写入；把问题写成一句 `problem` |
+| Coach | 任意 OpenAI 兼容 HTTP API，或 mock | 只回一张短 JSON：`continue` / `revise` / `halt` + `instruction` |
 
 循环：`act` →（升级条件）→ `ask` → `apply` → `act`。`apply` **必须**把教练的 `instruction` 注入下一轮 Worker system prompt。`halt` 结束进程并返回非 0。
 
 升级只发生在：同一工具连败两次、即将 mutate git / 写 remote、用户要求 review、Worker 发出 `unsure`。
+
+发给教练的不是仓库 dump，而是一句说清楚的问题：失败了什么、试过什么、现在需要什么。事件日志依次是：`work` → `stuck`（带问题）→ `asked_coach` → `coach_instruction` → `resumed`。
+
+## 本机看板怎么开
+
+用标准库 HTTP + SSE，只绑 `127.0.0.1:8765`，不需要浏览器插件：
+
+```bash
+python -m local_foreman ui
+# 或
+local-foreman ui
+```
+
+然后打开 [http://127.0.0.1:8765/](http://127.0.0.1:8765/)。
+
+页面会显示：目标、当前状态、最后问题陈述、最后一条教练指示、事件日志。状态文案是中文：
+
+- **干活中** — 本地模型在工作
+- **求助中（正在咨询大模型）** — 已把问题说清楚，正在问教练
+- **已收到指示** — 教练的 `continue` / `revise` / `halt` 已回来
+- **继续** — 指示已写入 Worker system prompt，本地接着干
+
+没有 API key 也能看：页面会跑一段 mock 演示（先读 README，再假装一次远端写入被拦住，教练回 `continue`，本地继续）。不要在 smoke 里打真实教练接口。
+
+```bash
+# 换端口
+LOCAL_FOREMAN_UI_PORT=8765 python -m local_foreman ui
+# 只开页面、不自动演示
+python -m local_foreman ui --no-demo
+```
 
 ## 真实链路怎么接
 
@@ -41,7 +74,7 @@ local-foreman "把 README 读一遍并总结"
 python -m local_foreman --worker mlx --coach openai "把 README 读一遍并总结"
 ```
 
-CLI 会逐行打印状态（`act` / `ask` / `apply`），最后打印 `done=`、`states=`、`verdicts=`。遇到 `halt` 以非 0 退出。
+CLI 会逐行打印状态（`act` / `ask` / `apply`），最后打印 `done=`、`states=`、`problem=`、`verdicts=`。遇到 `halt` 以非 0 退出。
 
 没有 Mac、或不想下载权重时，整条协议仍可用 mock 跑：
 
@@ -75,6 +108,8 @@ python3 -m pip install -e '.[mlx]'
 | `COACH_API_KEY` | secret | 教练 API key；smoke 不需要 |
 | `COACH_MODEL` | 模型名 | 默认 `gpt-4o` |
 | `LOCAL_FOREMAN_ROOT` | 路径 | 工具工作根目录，默认 cwd |
+| `LOCAL_FOREMAN_UI_HOST` | host | 看板地址，默认 `127.0.0.1` |
+| `LOCAL_FOREMAN_UI_PORT` | port | 看板端口，默认 `8765` |
 
 CLI 的 `--worker` / `--coach` 会覆盖对应环境变量。`--smoke` 会强制两边都是 mock。
 
@@ -91,7 +126,9 @@ CLI 的 `--worker` / `--coach` 会覆盖对应环境变量。`--smoke` 会强制
 ```
 act-ok
 ask-ok
+problem-ok
 apply-ok
+ui-ok
 oss-ok
 ```
 
@@ -99,8 +136,10 @@ oss-ok
 
 1. `act-ok` — 安全 read 只待在 `act`，不升级教练
 2. `ask-ok` — 假的 remote push 被拦住并进入 `ask`
-3. `apply-ok` — mock 教练的 `continue` / `revise` / `halt` 都走完 `apply`，且 `instruction` 注入下一轮 Worker system prompt
-4. `oss-ok` — 仓库里已有 `LICENSE` 与 `.github/workflows/smoke.yml`（可选 token）
+3. `problem-ok` — Ticket 带一句清楚的 `problem`（失败了什么、试过什么、需要什么）
+4. `apply-ok` — mock 教练的 `continue` / `revise` / `halt` 都走完 `apply`，且 `instruction` 注入下一轮 Worker system prompt
+5. `ui-ok` — `GET /` 是 HTML，并能观察到求助 / 咨询大模型事件
+6. `oss-ok` — 仓库里已有 `LICENSE` 与 `.github/workflows/smoke.yml`（可选 token）
 
 GitHub Actions（[`.github/workflows/smoke.yml`](.github/workflows/smoke.yml)）在 Ubuntu + Python 3.11 上只跑这一条 mock smoke。
 
@@ -108,7 +147,7 @@ GitHub Actions（[`.github/workflows/smoke.yml`](.github/workflows/smoke.yml)）
 
 - **不是** Cursor / Grok Bot / 云端 Agent 的克隆或兼容层。
 - **不是** 托管服务。默认全部在你自己的机器上跑。
-- Coach 只看一张短 Ticket，不接收整仓 dump。
+- Coach 只看一张短 Ticket（核心是 `problem`），不接收整仓 dump。
 - 本项目只允许本地 git；不要在这个工作副本上加 remote、不要 push。发布由维护者处理。
 
 ## 许可与归属

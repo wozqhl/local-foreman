@@ -25,7 +25,9 @@ CI 和本地 smoke **只走 mock**，不下载 MLX 权重，不调用真实教�
 ```
 act-ok
 ask-ok
+problem-ok
 apply-ok
+ui-ok
 oss-ok
 ```
 
@@ -33,7 +35,7 @@ oss-ok
 
 ## 改代码时请守住的边界
 
-1. **Local 干活，Coach 只出短指令。** Ticket 不带整仓 dump。
+1. **Local 干活，Coach 只出短指令。** Ticket 必须有一句清楚的 `problem`，不带整仓 dump。
 2. `git push` / 远端写入必须先 `ask`，禁止在 `act` 里直接执行。
 3. `apply` 必须把 `instruction` 注入下一轮 Worker system prompt。
 4. 新增工具先走 `tools.py` 的 `needs_ask` / `classify_risk`。

@@ -1,6 +1,8 @@
 # 路线图
 
-## 0.1 — 真实链路（当前）
+## 0.1 — 真实链路
+
+## 0.1.1 — 看板与说清问题（当前）
 
 - [x] `act` / `ask` / `apply` 协议与 ticket 校验
 - [x] 真实 `MlxWorker`：可选导入 mlx-lm，chat template，`parse_action`
@@ -8,6 +10,8 @@
 - [x] 产品 CLI：`--worker` / `--coach`，状态打印，halt 非 0 退出
 - [x] mock smoke + GitHub Actions（仅 mock）
 - [x] Apache-2.0 文档与 OSS 元数据
+- [x] 把问题说清楚再问教练（`ticket.problem`）
+- [x] 本机看板：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续
 
 ## 0.2 — Worker 更稳
 

@@ -2,6 +2,16 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.1.1] — 2026-08-25
+
+### Added
+
+- Ticket 增加必填 `problem`：一句话说清失败了什么、试过什么、需要什么。不再把现场当 dump 扔给教练。
+- 事件日志：`work` / `stuck` / `asked_coach` / `coach_instruction` / `resumed`。`apply` 后 Worker 必须带着教练指示继续。
+- 本机看板：`python -m local_foreman ui`（stdlib HTTP + SSE，`127.0.0.1:8765`）。中文状态：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续。
+- mock 演示：读 README → 假升级 → 教练 continue → 继续干活，无需 API key。
+- Smoke 新 token：`problem-ok`、`ui-ok`。原有 `act-ok` / `ask-ok` / `apply-ok` / `oss-ok` 保留。
+
 ## [0.1.0] — 2026-08-25
 
 ### Added

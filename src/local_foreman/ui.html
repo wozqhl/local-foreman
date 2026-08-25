@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local Foreman · 本机看板</title>
+<style>
+  :root {
+    --bg: #16130f;
+    --panel: #221d16;
+    --ink: #f4ead7;
+    --muted: #b7a78a;
+    --line: #3a3226;
+    --work: #d4a017;
+    --ask: #e36b2d;
+    --got: #3c8d7a;
+    --go: #7aa35a;
+    --danger: #c45c4a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink);
+    font-family: "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Source Han Sans SC", sans-serif;
+    min-height: 100%; }
+  body { padding: 28px 20px 48px; }
+  .wrap { max-width: 880px; margin: 0 auto; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 22px; }
+  h1 { font-size: 22px; font-weight: 650; margin: 0 0 6px; letter-spacing: .02em; }
+  .sub { color: var(--muted); font-size: 13px; line-height: 1.55; }
+  button {
+    background: #2b241b; color: var(--ink); border: 1px solid var(--line);
+    border-radius: 10px; padding: 8px 14px; cursor: pointer; font: inherit;
+  }
+  button:hover { border-color: var(--work); }
+  .status {
+    display: flex; align-items: center; gap: 14px; padding: 18px 20px;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+    margin-bottom: 16px;
+  }
+  .dot { width: 14px; height: 14px; border-radius: 50%; background: var(--work); flex: 0 0 14px; }
+  .dot.ask { background: var(--ask); box-shadow: 0 0 0 6px rgba(227,107,45,.18); animation: pulse 1.2s infinite; }
+  .dot.got { background: var(--got); animation: none; }
+  .dot.go { background: var(--go); animation: none; }
+  .dot.work { background: var(--work); }
+  @keyframes pulse { 50% { box-shadow: 0 0 0 10px rgba(227,107,45,.04); } }
+  .status-label { font-size: 28px; font-weight: 700; letter-spacing: .04em; }
+  .status-hint { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  .grid { display: grid; grid-template-columns: 1fr; gap: 12px; margin-bottom: 16px; }
+  @media (min-width: 720px) { .grid { grid-template-columns: 1fr 1fr; } .goal { grid-column: 1 / -1; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; }
+  .card h2 { margin: 0 0 8px; font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: .08em; text-transform: uppercase; }
+  .card p { margin: 0; white-space: pre-wrap; line-height: 1.55; font-size: 14px; }
+  .empty { color: #6f6452; }
+  .log { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px 8px; }
+  .log h2 { margin: 0 0 10px; font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: .08em; }
+  .ev { display: grid; grid-template-columns: 108px 1fr; gap: 10px; padding: 10px 0; border-top: 1px solid var(--line); font-size: 13px; line-height: 1.5; }
+  .ev:first-of-type { border-top: 0; }
+  .tag { font-weight: 650; }
+  .tag.work { color: var(--work); }
+  .tag.stuck, .tag.asked_coach { color: var(--ask); }
+  .tag.coach_instruction { color: var(--got); }
+  .tag.resumed { color: var(--go); }
+  footer { margin-top: 18px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Local Foreman · 本机看板</h1>
+      <div class="sub">完整闭环：本地模型干活 → 把问题说清楚 → 询问大模型 → 按指示继续。本页只跑在 127.0.0.1，mock 演示不用 key。</div>
+    </div>
+    <button id="rerun" type="button">再跑一遍演示</button>
+  </header>
+
+  <section class="status" id="status-box">
+    <div class="dot work" id="dot"></div>
+    <div>
+      <div class="status-label" id="state-label">干活中</div>
+      <div class="status-hint" id="state-hint">等待本机循环…</div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <article class="card goal">
+      <h2>目标 goal</h2>
+      <p id="goal" class="empty">（还没有目标）</p>
+    </article>
+    <article class="card">
+      <h2>最后问题 last problem</h2>
+      <p id="problem" class="empty">（还没有需要问大模型的问题）</p>
+    </article>
+    <article class="card">
+      <h2>教练指示 last instruction</h2>
+      <p id="instruction" class="empty">（还没有收到指示）</p>
+    </article>
+  </section>
+
+  <section class="log">
+    <h2>事件日志 work / stuck+problem / asked_coach / coach_instruction / resumed</h2>
+    <div id="log"></div>
+  </section>
+  <footer>只监听 127.0.0.1:8765 · python -m local_foreman ui · 求助中会标明正在咨询大模型</footer>
+</div>
+<script>
+const LABELS = {
+  work: "干活中",
+  stuck: "求助中（正在咨询大模型）",
+  asked_coach: "求助中（正在咨询大模型）",
+  coach_instruction: "已收到指示",
+  resumed: "继续"
+};
+const HINTS = {
+  work: "本地模型正在干活",
+  stuck: "遇到问题，正在把问题说清楚",
+  asked_coach: "求助中（正在咨询大模型）",
+  coach_instruction: "大模型已经给出指示",
+  resumed: "本地模型按指示继续",
+  act: "本地模型正在干活",
+  ask: "求助中（正在咨询大模型）",
+  apply: "已收到指示，准备继续"
+};
+function esc(s) {
+  return String(s || "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function labelOf(snap) {
+  const last = (snap.events || [])[snap.events.length - 1];
+  if (last && LABELS[last.kind]) return LABELS[last.kind];
+  if (snap.state_label) return snap.state_label;
+  if (snap.state === "ask") return "求助中（正在咨询大模型）";
+  if (snap.state === "apply") return "已收到指示";
+  return "干活中";
+}
+function paint(snap) {
+  const last = (snap.events || [])[snap.events.length - 1] || {};
+  const label = labelOf(snap);
+  document.getElementById("state-label").textContent = label;
+  document.getElementById("state-hint").textContent = HINTS[last.kind] || HINTS[snap.state] || "";
+  const dot = document.getElementById("dot");
+  dot.className = "dot " + (last.kind === "asked_coach" || last.kind === "stuck" || snap.state === "ask" ? "ask"
+    : last.kind === "coach_instruction" || snap.state === "apply" ? "got"
+    : last.kind === "resumed" ? "go" : "work");
+  const goal = document.getElementById("goal");
+  goal.textContent = snap.goal || "（还没有目标）";
+  goal.className = snap.goal ? "" : "empty";
+  const problem = document.getElementById("problem");
+  problem.textContent = snap.problem || "（还没有需要问大模型的问题）";
+  problem.className = snap.problem ? "" : "empty";
+  const ins = document.getElementById("instruction");
+  ins.textContent = snap.instruction || "（还没有收到指示）";
+  ins.className = snap.instruction ? "" : "empty";
+  const log = document.getElementById("log");
+  log.innerHTML = (snap.events || []).map(ev => {
+    const tag = LABELS[ev.kind] || ev.kind;
+    return `<div class="ev"><div class="tag ${esc(ev.kind)}">${esc(tag)}</div><div>${esc(ev.message)}</div></div>`;
+  }).join("") || `<div class="ev"><div class="tag work">干活中</div><div class="empty">还没有事件</div></div>`;
+}
+async function loadState() {
+  const r = await fetch("/state");
+  paint(await r.json());
+}
+async function startDemo() {
+  await fetch("/demo?pace=0.4");
+  await loadState();
+}
+document.getElementById("rerun").onclick = startDemo;
+const es = new EventSource("/events");
+es.addEventListener("state", ev => paint(JSON.parse(ev.data)));
+es.addEventListener("log", ev => {
+  const payload = JSON.parse(ev.data);
+  if (payload.goal !== undefined) paint(payload);
+  else loadState();
+});
+es.onerror = () => {};
+loadState().then(snap => {
+  if (snap && snap.events && snap.events.length) return;
+  startDemo();
+});
+</script>
+</body>
+</html>

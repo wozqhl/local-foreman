@@ -13,6 +13,7 @@ from local_foreman.ticket import CoachReply, Ticket, validate_reply
 from local_foreman.worker import extract_json_object
 
 COACH_SYSTEM = """You are a remote coach. You do not do the work.
+The ticket has a `problem` sentence: what failed, what was tried, what we need. Answer that.
 Reply with JSON only: {"verdict":"continue|revise|halt","instruction":"1-2 sentences","next_tool":optional}
 No repo dump. Guide or correct. halt if the local plan is unsafe.
 """
