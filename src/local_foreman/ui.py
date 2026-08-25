@@ -5,6 +5,7 @@ Chinese status: 干活中 / 求助中（正在咨询大模型） / 已收到指�
 Mock demo needs no keys: read → fake escalate → apply continue.
 UI defaults persist+idle ON so the board grows a mind log. Idle never
 asks the coach. retrieved / idle_act share the same SSE traj.
+Coach usage (asks / replies, optional USD) is counted on that same jsonl.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ from urllib.parse import parse_qs, urlparse
 
 from local_foreman.coach import MockCoach
 from local_foreman.loop import ForemanLoop
-from local_foreman.traj import Trajectory, default_traj_path
+from local_foreman.traj import Trajectory, coach_stats, default_traj_path
 from local_foreman.worker import MockWorker, WorkerAction
 
 DEFAULT_HOST = "127.0.0.1"
@@ -80,14 +81,20 @@ class LiveBoard:
     def snapshot(self) -> dict:
         with self.lock:
             last = self.events[-1]["kind"] if self.events else ""
-            return {
+            usage = coach_stats(self.events)
+            snap = {
                 "goal": self.goal,
                 "state": self.state,
                 "state_label": state_label(self.state, last),
                 "problem": self.problem,
                 "instruction": self.instruction,
                 "events": list(self.events),
+                "asks": usage["asks"],
+                "replies": usage["replies"],
             }
+            if "estimated_usd" in usage:
+                snap["estimated_usd"] = usage["estimated_usd"]
+            return snap
 
     def reset(self, goal: str) -> None:
         with self.lock:

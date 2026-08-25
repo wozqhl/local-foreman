@@ -38,7 +38,8 @@ Local 干活。遇到问题先把问题说清楚，再问 Coach。Coach 只出�
 
 - `local-foreman ui` 默认打开 persist + idle，看板会慢慢长出心思日志。看板可下载同一条 jsonl（`/traj`）。
 - 一次性 CLI 默认仍是任务驱动；`--persist` 或 `LOCAL_FOREMAN_PERSIST=1` 才写盘并空转。
-- `local-foreman traj` / `python -m local_foreman traj` 读同一条 jsonl：默认 cat，`--last N` 只看最近，`--kind thought,idle_act,retrieved` 过滤，`--out path` 导出。不另起一份日志。
+- `local-foreman traj` / `python -m local_foreman traj` 读同一条 jsonl：默认 cat，`--last N` 只看最近，`--kind thought,idle_act,retrieved` 过滤，`--out path` 导出。`--stats` 统计本文件上的 ask / 教练回复。不另起一份日志。
+- 教练用量只数 `asked_coach` 与 `coach_instruction`。空转想法不计次。`COACH_USD_PER_ASK` 未设置时只报次数，不估美元。
 
 新的用户目标，或进入 `ask`，会把空转退避重置回起始间隔（约 5s，可配，加倍直到上限）。
 
@@ -79,7 +80,7 @@ Local **必须**把 `instruction` 写进下一轮 Worker system prompt（`## Coa
 
 ## 本机看板
 
-`python -m local_foreman ui` 在 `127.0.0.1:8765` 用 stdlib HTTP + SSE 展示：目标、当前状态、最后问题、教练指示、心思、事件日志。中文状态：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想 / 展开原文 / 空转动手。空转、展开原文、空转动手都不得写成正在咨询大模型。
+`python -m local_foreman ui` 在 `127.0.0.1:8765` 用 stdlib HTTP + SSE 展示：目标、当前状态、最后问题、教练指示、心思、教练用量、事件日志。中文状态：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想 / 展开原文 / 空转动手。空转、展开原文、空转动手都不得写成正在咨询大模型，也不计入教练次数。
 
 ## Tools v1
 

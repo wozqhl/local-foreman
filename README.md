@@ -50,6 +50,7 @@ local-foreman ui
 - **空转中** / **自己在想** — 本地在想，没有问教练。看板默认打开 persist + idle，心思日志会慢慢变长
 - **展开原文** — 把压缩摘要按 seq 取回同一条 jsonl 的原文
 - **空转动手** — 空转选了一个本地小动作，仍走 `act`，没有问教练
+- **教练用量** — 同一条轨迹上的询问 / 回复次数。空转想法不计次；未设置 `COACH_USD_PER_ASK` 时不估美元
 
 没有 API key 也能看：页面会跑一段 mock 演示（先读 README，再假装一次远端写入被拦住，教练回 `continue`，本地继续）。不要在 smoke 里打真实教练接口。
 
@@ -96,9 +97,10 @@ local-foreman traj
 python -m local_foreman traj --last 20
 local-foreman traj --kind thought,idle_act,retrieved --last 10
 local-foreman traj --out /tmp/traj.jsonl
+local-foreman traj --stats
 ```
 
-`--last N` 只看最近，`--kind` 按逗号过滤，`--out` 导出仍是同一份 jsonl。路径默认 `$LOCAL_FOREMAN_TRAJ` 或 `<cwd>/.local-foreman/traj.jsonl`。看板页也可下载同一文件。
+`--last N` 只看最近，`--kind` 按逗号过滤，`--out` 导出仍是同一份 jsonl。`--stats` 统计本文件上的教练询问 / 回复次数；空转想法不计次。只有设置了 `COACH_USD_PER_ASK` 才额外估算美元，默认只报次数。路径默认 `$LOCAL_FOREMAN_TRAJ` 或 `<cwd>/.local-foreman/traj.jsonl`。看板页也可下载同一文件，并显示同一份用量。
 
 没有 Mac、或不想下载权重时，整条协议仍可用 mock 跑：
 
@@ -138,6 +140,7 @@ python3 -m pip install -e '.[mlx]'
 | `LOCAL_FOREMAN_TRAJ` | 路径 | 轨迹 jsonl，默认 `<cwd>/.local-foreman/traj.jsonl` |
 | `LOCAL_FOREMAN_IDLE_START` | 秒 | 空转起始间隔，默认 `5` |
 | `LOCAL_FOREMAN_IDLE_CAP` | 秒 | 空转间隔上限，默认 `300` |
+| `COACH_USD_PER_ASK` | 美元/次 | 可选。设置后 `traj --stats` 与看板才估算费用；未设置只计次数 |
 
 CLI 的 `--worker` / `--coach` 会覆盖对应环境变量。`--smoke` 会强制两边都是 mock。
 
@@ -164,6 +167,7 @@ compact-ok
 retrieve-ok
 idle-act-ok
 traj-cli-ok
+ask-cost-ok
 ```
 
 含义：
@@ -180,6 +184,7 @@ traj-cli-ok
 10. `retrieve-ok` — 压缩摘要能按 seq 展开回原始 jsonl，并注入 Worker 上下文
 11. `idle-act-ok` — 空转可触发本地安全 act，不打教练；远端写入仍走四条升级
 12. `traj-cli-ok` — `traj --last` 读同一条 jsonl，能打印 `thought` / `idle_act` / `retrieved`
+13. `ask-cost-ok` — mock ask/apply 后 `asks>=1`；仅空转的 persist 片段 `asks` 仍为 0
 
 GitHub Actions（[`.github/workflows/smoke.yml`](.github/workflows/smoke.yml)）在 Ubuntu + Python 3.11 上只跑这一条 mock smoke。
 

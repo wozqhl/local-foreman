@@ -3,6 +3,10 @@
 Recent entries stay verbatim. Older ones are summarized locally (no invented
 memories, no remote coach). The raw file is never rewritten so a later retrieve
 can expand a summary back to the original lines.
+
+Coach usage is counted on this same file: asked_coach / coach_instruction.
+Idle thought / idle_act / retrieved never increment the tally. Estimated USD
+is optional and only appears when COACH_USD_PER_ASK is set.
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ from typing import Any, Optional
 STATE_DIR_NAME = ".local-foreman"
 TRAJ_FILENAME = "traj.jsonl"
 ENV_TRAJ = "LOCAL_FOREMAN_TRAJ"
+ENV_USD_PER_ASK = "COACH_USD_PER_ASK"
 
 EVENT_WORK = "work"
 EVENT_STUCK = "stuck"
@@ -118,6 +123,10 @@ class Trajectory:
     ) -> list[dict[str, Any]]:
         """Expand a compacted summary (or seq span) back to raw jsonl rows."""
         return retrieve(self.entries, spec, first_seq=first_seq, last_seq=last_seq)
+
+    def stats(self) -> dict[str, Any]:
+        """Coach ask/reply tally for this jsonl. Idle thoughts do not count."""
+        return coach_stats(self.entries)
 
 
 def _kind_counts(kinds: dict[str, int]) -> str:
@@ -310,4 +319,54 @@ def write_jsonl(entries: list[dict[str, Any]], path: Path) -> None:
     with dest.open("w", encoding="utf-8") as fh:
         for ev in entries:
             fh.write(json.dumps(ev, ensure_ascii=False) + "\n")
+
+
+def coach_usd_per_ask() -> Optional[float]:
+    """Optional dollars per ask. Unset / invalid / negative -> count only."""
+    raw = (os.environ.get(ENV_USD_PER_ASK) or "").strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    if value < 0:
+        return None
+    return value
+
+
+def coach_stats(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Count ask / coach replies on this traj. Idle thoughts do not count.
+
+    asks = asked_coach rows (a real consult). replies = coach_instruction
+    rows. thought / idle_act / retrieved / work / stuck are ignored.
+    estimated_usd is included only when COACH_USD_PER_ASK is set.
+    """
+    asks = 0
+    replies = 0
+    for ev in entries:
+        kind = str(ev.get("kind") or "")
+        if kind == EVENT_ASKED_COACH:
+            asks += 1
+        elif kind == EVENT_COACH_INSTRUCTION:
+            replies += 1
+    out: dict[str, Any] = {"asks": asks, "replies": replies}
+    usd = coach_usd_per_ask()
+    if usd is not None:
+        out["usd_per_ask"] = usd
+        out["estimated_usd"] = round(asks * usd, 6)
+    return out
+
+
+def format_coach_stats(stats: dict[str, Any]) -> str:
+    """Human lines for `local-foreman traj --stats`."""
+    lines = [
+        f"asks={int(stats.get('asks') or 0)}",
+        f"replies={int(stats.get('replies') or 0)}",
+    ]
+    if "estimated_usd" in stats:
+        usd = stats["estimated_usd"]
+        text = f"{float(usd):.6f}".rstrip("0").rstrip(".")
+        lines.append(f"estimated_usd={text if text else '0'}")
+    return "\n".join(lines)
 

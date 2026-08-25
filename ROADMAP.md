@@ -22,6 +22,8 @@
 - [x] 空转可走本地小动作（`idle_act`，仍守四条升级，不问教练）
 - [x] Smoke：`traj-ok` / `idle-ok` / `compact-ok` / `retrieve-ok` / `idle-act-ok` / `traj-cli-ok`
 - [x] `traj` CLI：人眼查看同一条 jsonl（`--last` / `--kind` / `--out`）
+- [x] 本机统计教练询问次数（同一条 jsonl；空转不计；可选 `COACH_USD_PER_ASK`）
+- [x] Smoke：`ask-cost-ok`
 
 ## 0.3 — Worker 更稳
 

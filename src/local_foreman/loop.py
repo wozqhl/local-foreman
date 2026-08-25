@@ -7,6 +7,8 @@ local tool and still go through act + the four escalate rules.
 Compacted summaries can be expanded back to raw jsonl for worker context.
 After apply, the worker MUST continue with the coach instruction in its
 system prompt.
+Coach usage is tallied from asked_coach / coach_instruction on this same
+jsonl. Idle thought / idle_act / retrieved do not increment the counter.
 """
 
 from __future__ import annotations

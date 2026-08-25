@@ -3,6 +3,7 @@
 One-shot stays task-driven unless --persist / LOCAL_FOREMAN_PERSIST=1.
 `ui` defaults persist+idle ON. Idle think never calls the coach.
 `traj` tails/cats/exports the same jsonl the loop writes.
+`traj --stats` tallies ask / coach replies on that file (idle thoughts do not count).
 """
 
 from __future__ import annotations
@@ -30,8 +31,10 @@ from local_foreman.loop import (
 from local_foreman.ticket import problem_is_clear
 from local_foreman.traj import (
     Trajectory,
+    coach_stats,
     compact_entries,
     default_traj_path,
+    format_coach_stats,
     format_entry,
     parse_kinds,
     retrieve,
@@ -110,7 +113,7 @@ def run_ui(argv=None) -> int:
 def run_traj(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="local-foreman traj",
-        description="Inspect the same append-only traj jsonl the loop writes. No second log.",
+        description="Inspect the same append-only traj jsonl the loop writes. No second log. --stats tallies coach asks on that file.",
     )
     parser.add_argument(
         "path",
@@ -135,11 +138,17 @@ def run_traj(argv=None) -> int:
         metavar="PATH",
         help="export matching rows as the same jsonl",
     )
+    parser.add_argument(
+        "--stats",
+        action="store_true",
+        help="print ask / coach-reply tally for this jsonl (idle thoughts do not count)",
+    )
     args = parser.parse_args(argv)
 
     path = Path(args.path) if args.path else default_traj_path(_root())
     kinds = parse_kinds(args.kind)
-    selected = select_entries(Trajectory(path).entries, last=args.last, kinds=kinds)
+    loaded = Trajectory(path)
+    selected = select_entries(loaded.entries, last=args.last, kinds=kinds)
 
     if args.out:
         dest = Path(args.out)
@@ -150,6 +159,10 @@ def run_traj(argv=None) -> int:
         except OSError:
             pass
         write_jsonl(selected, dest)
+
+    if args.stats:
+        print(format_coach_stats(coach_stats(loaded.entries)))
+        return 0
 
     for ev in selected:
         print(format_entry(ev))
@@ -630,6 +643,156 @@ def _smoke_traj_cli(errors: list[str]) -> None:
     print("traj-cli-ok")
 
 
+def _smoke_ask_cost(root: Path, errors: list[str]) -> None:
+    tmp = Path(tempfile.mkdtemp(prefix="lf-ask-cost-"))
+    ask_path = tmp / "ask.jsonl"
+    push_cmd = "git " + "push" + " origin HEAD"
+    ask_worker = MockWorker(script=[
+        WorkerAction(kind="tool", tool="shell", args={"cmd": push_cmd}, thought="fake remote"),
+        WorkerAction(kind="done", thought="after persist ask"),
+    ])
+    ask_coach = MockCoach(["continue"])
+    ask_loop = ForemanLoop(
+        worker=ask_worker,
+        coach=ask_coach,
+        root=root,
+        max_steps=10,
+        persist=True,
+        idle=False,
+        traj_path=ask_path,
+    )
+    ask_res = ask_loop.run("smoke: ask cost")
+    loaded = Trajectory(ask_path)
+    stats = loaded.stats()
+    if ask_res.tickets < 1:
+        errors.append("ask-cost-ok: mock ask/apply produced no ticket")
+        return
+    if int(stats.get("asks") or 0) < 1:
+        errors.append("ask-cost-ok: after ask/apply asks=" + str(stats.get("asks")))
+        return
+    if int(stats.get("replies") or 0) < 1:
+        errors.append("ask-cost-ok: after ask/apply replies=" + str(stats.get("replies")))
+        return
+    if "estimated_usd" in stats:
+        errors.append("ask-cost-ok: USD shown while COACH_USD_PER_ASK unset")
+        return
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = main(["traj", str(ask_path), "--stats"])
+    if rc != 0:
+        errors.append("ask-cost-ok: traj --stats exit " + str(rc))
+        return
+    text = buf.getvalue()
+    if "asks=0" in text.splitlines():
+        errors.append("ask-cost-ok: traj --stats still asks=0 after ask/apply")
+        return
+    if not any(line.startswith("asks=") and line != "asks=0" for line in text.splitlines()):
+        errors.append("ask-cost-ok: traj --stats missing asks>=1 got=" + text[:200])
+        return
+    if "estimated_usd=" in text:
+        errors.append("ask-cost-ok: traj --stats printed USD with env unset")
+        return
+
+    idle_path = tmp / "idle.jsonl"
+    idle_worker = MockWorker(script=[
+        WorkerAction(kind="done", thought="idle only"),
+    ])
+    idle_coach = MockCoach(["halt"])
+    idle_loop = ForemanLoop(
+        worker=idle_worker,
+        coach=idle_coach,
+        root=root,
+        max_steps=8,
+        persist=True,
+        idle=True,
+        idle_start=0.0,
+        idle_cap=1.0,
+        idle_max=2,
+        traj_path=idle_path,
+        sleeper=lambda _s: None,
+    )
+    idle_res = idle_loop.run("smoke: idle cost")
+    if idle_coach.calls:
+        errors.append("ask-cost-ok: idle-only slice called coach")
+        return
+    if "ask" in idle_res.states or "apply" in idle_res.states:
+        errors.append("ask-cost-ok: idle leaked to coach states=" + str(idle_res.states))
+        return
+    idle_loaded = Trajectory(idle_path)
+    idle_stats = idle_loaded.stats()
+    if not any(e.get("kind") == "thought" for e in idle_loaded.entries):
+        errors.append("ask-cost-ok: idle-only slice wrote no thought")
+        return
+    if int(idle_stats.get("asks") or 0) != 0:
+        errors.append("ask-cost-ok: idle thoughts incremented asks=" + str(idle_stats))
+        return
+    if int(idle_stats.get("replies") or 0) != 0:
+        errors.append("ask-cost-ok: idle thoughts incremented replies=" + str(idle_stats))
+        return
+    buf2 = io.StringIO()
+    with contextlib.redirect_stdout(buf2):
+        rc2 = main(["traj", str(idle_path), "--stats"])
+    if rc2 != 0:
+        errors.append("ask-cost-ok: idle traj --stats exit " + str(rc2))
+        return
+    idle_text = buf2.getvalue()
+    if "asks=0" not in idle_text.splitlines():
+        errors.append("ask-cost-ok: idle traj --stats expected asks=0 got=" + idle_text[:200])
+        return
+
+    prev = os.environ.get("COACH_USD_PER_ASK")
+    os.environ["COACH_USD_PER_ASK"] = "0.02"
+    try:
+        priced = coach_stats(loaded.entries)
+        if "estimated_usd" not in priced:
+            errors.append("ask-cost-ok: COACH_USD_PER_ASK set but no estimated_usd")
+            return
+        expected = round(int(priced["asks"]) * 0.02, 6)
+        if priced.get("estimated_usd") != expected:
+            errors.append(
+                "ask-cost-ok: estimated_usd="
+                + str(priced.get("estimated_usd"))
+                + " expected="
+                + str(expected)
+            )
+            return
+        buf3 = io.StringIO()
+        with contextlib.redirect_stdout(buf3):
+            rc3 = main(["traj", str(ask_path), "--stats"])
+        if rc3 != 0 or "estimated_usd=" not in buf3.getvalue():
+            errors.append("ask-cost-ok: priced traj --stats missing estimated_usd")
+            return
+    finally:
+        if prev is None:
+            os.environ.pop("COACH_USD_PER_ASK", None)
+        else:
+            os.environ["COACH_USD_PER_ASK"] = prev
+
+    from local_foreman.ui import LiveBoard, load_index_html
+
+    html = load_index_html()
+    if "教练用量" not in html or "coach-usage" not in html:
+        errors.append("ask-cost-ok: UI missing coach usage copy")
+        return
+    board = LiveBoard()
+    board.push({"kind": "thought", "message": "空转：本地还在，不问教练"})
+    snap0 = board.snapshot()
+    if int(snap0.get("asks") or 0) != 0:
+        errors.append("ask-cost-ok: UI thought incremented asks=" + str(snap0.get("asks")))
+        return
+    board.push({"kind": "asked_coach", "message": "求助中（正在咨询大模型）"})
+    board.push({"kind": "coach_instruction", "message": "continue locally"})
+    snap1 = board.snapshot()
+    if int(snap1.get("asks") or 0) < 1:
+        errors.append("ask-cost-ok: UI snapshot asks=" + str(snap1.get("asks")))
+        return
+    if int(snap1.get("replies") or 0) < 1:
+        errors.append("ask-cost-ok: UI snapshot replies=" + str(snap1.get("replies")))
+        return
+
+    print("ask-cost-ok")
+
+
 def run_smoke() -> int:
     root = Path(__file__).resolve().parents[2]
     errors = []
@@ -716,6 +879,7 @@ def run_smoke() -> int:
     _smoke_retrieve(root, errors)
     _smoke_idle_act(root, errors)
     _smoke_traj_cli(errors)
+    _smoke_ask_cost(root, errors)
 
     if errors:
         for e in errors:

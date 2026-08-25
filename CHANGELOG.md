@@ -2,6 +2,15 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.2.3] — 2026-08-26
+
+### Added
+
+- 本机统计教练用量：同一条 traj jsonl 上数 `asked_coach` / `coach_instruction`。空转 `thought` / `idle_act` / `retrieved` 不计次。
+- `local-foreman traj --stats` 打印 `asks=` / `replies=`。只有设置了 `COACH_USD_PER_ASK` 才额外给出 `estimated_usd`（默认不估美元）。
+- 看板增加「教练用量」卡片，数字来自同一条轨迹。
+- Smoke 新 token：`ask-cost-ok`。原有 token 保留，仍只走 mock。
+
 ## [0.2.2] — 2026-08-26
 
 ### Added
