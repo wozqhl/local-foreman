@@ -36,8 +36,9 @@ Local 干活。遇到问题先把问题说清楚，再问 Coach。Coach 只出�
 
 每条含：`ts` `seq` `kind` `message` `goal`，以及当时的 tool observation / ticket / coach reply（若有）。
 
-- `local-foreman ui` 默认打开 persist + idle，看板会慢慢长出心思日志。
+- `local-foreman ui` 默认打开 persist + idle，看板会慢慢长出心思日志。看板可下载同一条 jsonl（`/traj`）。
 - 一次性 CLI 默认仍是任务驱动；`--persist` 或 `LOCAL_FOREMAN_PERSIST=1` 才写盘并空转。
+- `local-foreman traj` / `python -m local_foreman traj` 读同一条 jsonl：默认 cat，`--last N` 只看最近，`--kind thought,idle_act,retrieved` 过滤，`--out path` 导出。不另起一份日志。
 
 新的用户目标，或进入 `ask`，会把空转退避重置回起始间隔（约 5s，可配，加倍直到上限）。
 

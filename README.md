@@ -89,6 +89,17 @@ local-foreman --persist "把 README 读一遍并总结"
 # 或 LOCAL_FOREMAN_PERSIST=1
 ```
 
+轨迹只有一条 jsonl。人眼查看用同一个文件，不另起格式：
+
+```bash
+local-foreman traj
+python -m local_foreman traj --last 20
+local-foreman traj --kind thought,idle_act,retrieved --last 10
+local-foreman traj --out /tmp/traj.jsonl
+```
+
+`--last N` 只看最近，`--kind` 按逗号过滤，`--out` 导出仍是同一份 jsonl。路径默认 `$LOCAL_FOREMAN_TRAJ` 或 `<cwd>/.local-foreman/traj.jsonl`。看板页也可下载同一文件。
+
 没有 Mac、或不想下载权重时，整条协议仍可用 mock 跑：
 
 ```bash
@@ -152,6 +163,7 @@ idle-ok
 compact-ok
 retrieve-ok
 idle-act-ok
+traj-cli-ok
 ```
 
 含义：
@@ -167,6 +179,7 @@ idle-act-ok
 9. `compact-ok` — 旧条目被摘要，最近几条保持原文
 10. `retrieve-ok` — 压缩摘要能按 seq 展开回原始 jsonl，并注入 Worker 上下文
 11. `idle-act-ok` — 空转可触发本地安全 act，不打教练；远端写入仍走四条升级
+12. `traj-cli-ok` — `traj --last` 读同一条 jsonl，能打印 `thought` / `idle_act` / `retrieved`
 
 GitHub Actions（[`.github/workflows/smoke.yml`](.github/workflows/smoke.yml)）在 Ubuntu + Python 3.11 上只跑这一条 mock smoke。
 

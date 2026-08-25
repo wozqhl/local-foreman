@@ -20,7 +20,8 @@
 - [x] 分层压缩（只在本地，不编造记忆）
 - [x] 按 seq 展开摘要（`retrieved`，注入 Worker 上下文）
 - [x] 空转可走本地小动作（`idle_act`，仍守四条升级，不问教练）
-- [x] Smoke：`traj-ok` / `idle-ok` / `compact-ok` / `retrieve-ok` / `idle-act-ok`
+- [x] Smoke：`traj-ok` / `idle-ok` / `compact-ok` / `retrieve-ok` / `idle-act-ok` / `traj-cli-ok`
+- [x] `traj` CLI：人眼查看同一条 jsonl（`--last` / `--kind` / `--out`）
 
 ## 0.3 — Worker 更稳
 

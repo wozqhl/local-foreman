@@ -1,12 +1,15 @@
-"""CLI: python -m local_foreman "goal" | local-foreman ui | --smoke
+"""CLI: python -m local_foreman "goal" | local-foreman ui | local-foreman traj | --smoke
 
 One-shot stays task-driven unless --persist / LOCAL_FOREMAN_PERSIST=1.
 `ui` defaults persist+idle ON. Idle think never calls the coach.
+`traj` tails/cats/exports the same jsonl the loop writes.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import os
 import sys
@@ -25,7 +28,17 @@ from local_foreman.loop import (
     env_flag,
 )
 from local_foreman.ticket import problem_is_clear
-from local_foreman.traj import Trajectory, compact_entries, retrieve, retrieve_from_summary
+from local_foreman.traj import (
+    Trajectory,
+    compact_entries,
+    default_traj_path,
+    format_entry,
+    parse_kinds,
+    retrieve,
+    retrieve_from_summary,
+    select_entries,
+    write_jsonl,
+)
 from local_foreman.worker import MockWorker, WorkerAction
 
 
@@ -94,6 +107,55 @@ def run_ui(argv=None) -> int:
     )
 
 
+def run_traj(argv=None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="local-foreman traj",
+        description="Inspect the same append-only traj jsonl the loop writes. No second log.",
+    )
+    parser.add_argument(
+        "path",
+        nargs="?",
+        help="jsonl path (default: $LOCAL_FOREMAN_TRAJ or <cwd>/.local-foreman/traj.jsonl)",
+    )
+    parser.add_argument(
+        "--last",
+        nargs="?",
+        const=20,
+        type=int,
+        metavar="N",
+        help="only the last N matching events (N defaults to 20)",
+    )
+    parser.add_argument(
+        "--kind",
+        default="",
+        help="comma-separated kinds, e.g. thought,idle_act,retrieved",
+    )
+    parser.add_argument(
+        "--out",
+        metavar="PATH",
+        help="export matching rows as the same jsonl",
+    )
+    args = parser.parse_args(argv)
+
+    path = Path(args.path) if args.path else default_traj_path(_root())
+    kinds = parse_kinds(args.kind)
+    selected = select_entries(Trajectory(path).entries, last=args.last, kinds=kinds)
+
+    if args.out:
+        dest = Path(args.out)
+        try:
+            if path.is_file() and dest.resolve() == path.resolve():
+                print("traj: --out will not rewrite the live jsonl", file=sys.stderr)
+                return 2
+        except OSError:
+            pass
+        write_jsonl(selected, dest)
+
+    for ev in selected:
+        print(format_entry(ev))
+    return 0
+
+
 def _smoke_problem(ask_res, errors: list[str]) -> None:
     tickets = [h["ticket"] for h in ask_res.history if isinstance(h, dict) and "ticket" in h]
     if not tickets:
@@ -135,6 +197,9 @@ def _smoke_ui(root: Path, errors: list[str]) -> None:
         if "展开原文" not in body or "空转动手" not in body:
             errors.append("ui-ok: HTML missing retrieved/idle-act copy")
             return
+        if "下载轨迹" not in body or 'href="/traj"' not in body:
+            errors.append("ui-ok: HTML missing traj download")
+            return
         with urllib.request.urlopen(base + "/demo?sync=1", timeout=8) as resp:
             demo = json.loads(resp.read().decode("utf-8"))
         with urllib.request.urlopen(base + "/state", timeout=5) as resp:
@@ -150,6 +215,10 @@ def _smoke_ui(root: Path, errors: list[str]) -> None:
         if not consult:
             errors.append("ui-ok: no ask/consult event observable kinds=" + str(kinds))
             return
+        with urllib.request.urlopen(base + "/traj", timeout=5) as resp:
+            if resp.status != 200:
+                errors.append("ui-ok: GET /traj not 200")
+                return
         print("ui-ok")
     except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
         errors.append("ui-ok: " + str(exc))
@@ -509,6 +578,58 @@ def _smoke_idle_act(root: Path, errors: list[str]) -> None:
     print("idle-act-ok")
 
 
+def _smoke_traj_cli(errors: list[str]) -> None:
+    tmp = Path(tempfile.mkdtemp(prefix="lf-traj-cli-"))
+    path = tmp / "traj.jsonl"
+    seeded = Trajectory(path, goal="smoke traj cli")
+    seeded.append({"kind": "thought", "message": "inspect thought"})
+    seeded.append({"kind": "idle_act", "message": "inspect idle act"})
+    seeded.append({"kind": "retrieved", "message": "inspect retrieved"})
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = main(["traj", str(path), "--last"])
+    if rc != 0:
+        errors.append("traj-cli-ok: traj --last exit " + str(rc))
+        return
+    text = buf.getvalue()
+    for kind in ("thought", "idle_act", "retrieved"):
+        if kind not in text:
+            errors.append("traj-cli-ok: --last missing " + kind + " got=" + text[:240])
+            return
+
+    outp = tmp / "export.jsonl"
+    buf2 = io.StringIO()
+    with contextlib.redirect_stdout(buf2):
+        rc2 = main(
+            [
+                "traj",
+                str(path),
+                "--kind",
+                "thought,idle_act,retrieved",
+                "--last",
+                "3",
+                "--out",
+                str(outp),
+            ]
+        )
+    if rc2 != 0:
+        errors.append("traj-cli-ok: --kind/--out exit " + str(rc2))
+        return
+    if not outp.is_file():
+        errors.append("traj-cli-ok: --out did not write")
+        return
+    exported = Trajectory(outp)
+    ekinds = [e.get("kind") for e in exported.entries]
+    if ekinds != ["thought", "idle_act", "retrieved"]:
+        errors.append("traj-cli-ok: --out kinds=" + str(ekinds))
+        return
+    if any(e.get("kind") == "summary" for e in exported.entries):
+        errors.append("traj-cli-ok: export invented a second format")
+        return
+    print("traj-cli-ok")
+
+
 def run_smoke() -> int:
     root = Path(__file__).resolve().parents[2]
     errors = []
@@ -594,6 +715,7 @@ def run_smoke() -> int:
     _smoke_compact(errors)
     _smoke_retrieve(root, errors)
     _smoke_idle_act(root, errors)
+    _smoke_traj_cli(errors)
 
     if errors:
         for e in errors:
@@ -606,12 +728,14 @@ def main(argv=None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     if raw and raw[0] == "ui":
         return run_ui(raw[1:])
+    if raw and raw[0] == "traj":
+        return run_traj(raw[1:])
 
     parser = argparse.ArgumentParser(
         prog="local-foreman",
         description="Mac-first local agent: the local worker does the work; the remote coach only guides.",
     )
-    parser.add_argument("goal", nargs="*", help="one goal, or the word ui")
+    parser.add_argument("goal", nargs="*", help="one goal, or the word ui / traj")
     parser.add_argument("--smoke", action="store_true", help="run mock act/ask/apply checks")
     parser.add_argument("--review", action="store_true", help="force ask (user asked for review)")
     parser.add_argument(

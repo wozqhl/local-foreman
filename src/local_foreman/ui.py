@@ -285,6 +285,9 @@ def make_handler(board: LiveBoard, root: Path):
             if path == "/events":
                 self._sse()
                 return
+            if path == "/traj":
+                self._traj_file()
+                return
             self.send_error(404, "not found")
 
         def do_POST(self) -> None:  # noqa: N802
@@ -293,6 +296,18 @@ def make_handler(board: LiveBoard, root: Path):
                 self._run_demo(parse_qs(parsed.query))
                 return
             self.send_error(404, "not found")
+
+        def _traj_file(self) -> None:
+            """Same jsonl the loop writes. No second log."""
+            traj_file = default_traj_path(root)
+            data = traj_file.read_bytes() if traj_file.is_file() else b""
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+            self.send_header("Content-Disposition", 'attachment; filename="traj.jsonl"')
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
 
         def _run_demo(self, qs: dict) -> None:
             sync = (qs.get("sync") or ["0"])[0] in {"1", "true", "yes"}

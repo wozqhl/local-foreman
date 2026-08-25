@@ -32,6 +32,13 @@
     border-radius: 10px; padding: 8px 14px; cursor: pointer; font: inherit;
   }
   button:hover { border-color: var(--work); }
+  .actions { display: flex; gap: 8px; align-items: center; flex-shrink: 0; }
+  a.dl {
+    background: #2b241b; color: var(--ink); border: 1px solid var(--line);
+    border-radius: 10px; padding: 8px 14px; text-decoration: none; font: inherit;
+    display: inline-block;
+  }
+  a.dl:hover { border-color: var(--work); }
   .status {
     display: flex; align-items: center; gap: 14px; padding: 18px 20px;
     background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
@@ -74,7 +81,10 @@
       <h1>Local Foreman · 本机看板</h1>
       <div class="sub">完整闭环：本地模型干活 → 把问题说清楚 → 询问大模型 → 按指示继续。空转时本地自己想，可挑一个本地小动作，写入同一条轨迹，不问教练。压缩摘要可展开原文。本页只跑在 127.0.0.1，mock 演示不用 key。</div>
     </div>
-    <button id="rerun" type="button">再跑一遍演示</button>
+    <div class="actions">
+      <a class="dl" href="/traj" download="traj.jsonl">下载轨迹</a>
+      <button id="rerun" type="button">再跑一遍演示</button>
+    </div>
   </header>
 
   <section class="status" id="status-box">
@@ -108,7 +118,7 @@
     <h2>心思 / 事件 work · thought · idle_act · retrieved · stuck · asked_coach · coach_instruction · resumed</h2>
     <div id="log"></div>
   </section>
-  <footer>只监听 127.0.0.1:8765 · python -m local_foreman ui · 求助中会标明正在咨询大模型 · 空转中 / 自己在想 / 展开原文 / 空转动手 不是求助</footer>
+  <footer>只监听 127.0.0.1:8765 · python -m local_foreman ui · python -m local_foreman traj 读同一条 jsonl · 求助中会标明正在咨询大模型 · 空转中 / 自己在想 / 展开原文 / 空转动手 不是求助</footer>
 </div>
 <script>
 const LABELS = {

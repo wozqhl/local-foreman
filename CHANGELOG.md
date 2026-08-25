@@ -2,6 +2,14 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.2.2] — 2026-08-26
+
+### Added
+
+- `local-foreman traj` / `python -m local_foreman traj`：读循环写下的同一条 jsonl。`--last N`、`--kind thought,idle_act,retrieved`、`--out path`。不另起格式。
+- 看板可下载同一文件（`GET /traj`）。
+- Smoke 新 token：`traj-cli-ok`。原有 token 保留，仍只走 mock。
+
 ## [0.2.1] — 2026-08-26
 
 ### Added

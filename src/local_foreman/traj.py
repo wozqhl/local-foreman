@@ -262,3 +262,52 @@ def render_compacted(
             msg = item.get("message") or ""
             lines.append(f"{kind}: {msg}".rstrip())
     return "\n".join(line for line in lines if line)
+
+
+def parse_kinds(spec: Optional[str]) -> Optional[set[str]]:
+    """Comma-separated kind filter. Empty spec means no filter."""
+    if not spec:
+        return None
+    kinds = {part.strip() for part in str(spec).split(",") if part.strip()}
+    return kinds or None
+
+
+def select_entries(
+    entries: list[dict[str, Any]],
+    *,
+    last: Optional[int] = None,
+    kinds: Optional[set[str]] = None,
+) -> list[dict[str, Any]]:
+    """Subset of the same jsonl rows. Does not rewrite or invent events."""
+    out = list(entries)
+    if kinds:
+        out = [e for e in out if str(e.get("kind") or "") in kinds]
+    if last is not None:
+        try:
+            n = int(last)
+        except (TypeError, ValueError):
+            n = 0
+        if n <= 0:
+            return []
+        out = out[-n:]
+    return out
+
+
+def format_entry(ev: dict[str, Any]) -> str:
+    """One human line: seq  kind  message. Kind stays a searchable token."""
+    kind = str(ev.get("kind") or "event")
+    msg = str(ev.get("message") or "")
+    seq = ev.get("seq")
+    if seq is not None:
+        return f"{seq}  {kind}  {msg}".rstrip()
+    return f"{kind}  {msg}".rstrip()
+
+
+def write_jsonl(entries: list[dict[str, Any]], path: Path) -> None:
+    """Export rows in the same append-only jsonl shape the loop writes."""
+    dest = Path(path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with dest.open("w", encoding="utf-8") as fh:
+        for ev in entries:
+            fh.write(json.dumps(ev, ensure_ascii=False) + "\n")
+
