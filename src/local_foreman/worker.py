@@ -12,16 +12,22 @@ Reply with one JSON object, no markdown:
   {"kind":"tool","tool":"read|write|shell","args":{...},"thought":"..."}
   {"kind":"done","thought":"..."}
   {"kind":"unsure","thought":"..."}
+  {"kind":"thought","thought":"..."}
 Tools: read {path}, write {path,content}, shell {cmd}.
 Emit unsure when you cannot proceed safely. Do not push remotes yourself.
+When idle, emit a short local {"kind":"thought"} monologue. Idle thoughts never
+ask the coach. If you want a tool while idle, emit kind=tool; it still goes
+through act and the existing escalate rules.
 """
 
 DEFAULT_MLX_MODEL = "mlx-community/Qwen3-8B-4bit"
 
+ACTION_KINDS = {"tool", "done", "unsure", "thought"}
+
 
 @dataclass
 class WorkerAction:
-    kind: str  # tool | done | unsure
+    kind: str  # tool | done | unsure | thought
     tool: Optional[str] = None
     args: dict[str, Any] = field(default_factory=dict)
     thought: str = ""
@@ -34,6 +40,9 @@ class WorkerAction:
 
 class Worker(Protocol):
     def step(self, *, goal: str, system: str, history: list[dict]) -> WorkerAction:
+        ...
+
+    def think(self, *, goal: str, system: str, history: list[dict]) -> WorkerAction:
         ...
 
 
@@ -60,7 +69,7 @@ def parse_action(raw: str) -> WorkerAction:
         text = (raw or "").strip()
         return WorkerAction(kind="unsure", thought=(text[:200] or "unparseable"))
     kind = str(data.get("kind") or "unsure")
-    if kind not in {"tool", "done", "unsure"}:
+    if kind not in ACTION_KINDS:
         kind = "unsure"
     return WorkerAction(
         kind=kind,
@@ -73,9 +82,15 @@ def parse_action(raw: str) -> WorkerAction:
 class MockWorker:
     """Deterministic worker. No model download. Used for smoke."""
 
-    def __init__(self, script: Optional[list[WorkerAction]] = None):
+    def __init__(
+        self,
+        script: Optional[list[WorkerAction]] = None,
+        think_script: Optional[list[WorkerAction]] = None,
+    ):
         self.script = list(script or [])
+        self.think_script = list(think_script or [])
         self.calls = 0
+        self.think_calls = 0
         self.last_system: str = ""
 
     def step(self, *, goal: str, system: str, history: list[dict]) -> WorkerAction:
@@ -102,6 +117,20 @@ class MockWorker:
                 thought="safe read",
             )
         return WorkerAction(kind="done", thought="goal complete")
+
+    def think(self, *, goal: str, system: str, history: list[dict]) -> WorkerAction:
+        self.think_calls += 1
+        self.last_system = system
+        if self.think_script:
+            idx = min(self.think_calls - 1, len(self.think_script) - 1)
+            return self.think_script[idx]
+        note = goal.strip() or "the current goal"
+        if len(note) > 80:
+            note = note[:77] + "..."
+        return WorkerAction(
+            kind="thought",
+            thought=f"空转：还在本地想「{note}」，没有要升级教练的事",
+        )
 
 
 class MlxWorker:
@@ -140,13 +169,19 @@ class MlxWorker:
         self._model, self._tokenizer = load(self.model_id)
         self._generate = generate
 
-    def _prompt(self, *, goal: str, system: str, history: list[dict]) -> str:
+    def _prompt(self, *, goal: str, system: str, history: list[dict], idle: bool = False) -> str:
         user_parts = ["Goal: " + goal]
         if history:
             user_parts.append(
-                "Recent history:\n" + json.dumps(history[-6:], ensure_ascii=False)
+                "Recent history:\n" + json.dumps(history[-8:], ensure_ascii=False)
             )
-        user_parts.append("Reply with one JSON action now.")
+        if idle:
+            user_parts.append(
+                "Idle local think. Reply with one short JSON "
+                '{"kind":"thought","thought":"..."} or a tool action. Do not ask the coach.'
+            )
+        else:
+            user_parts.append("Reply with one JSON action now.")
         user = "\n\n".join(user_parts)
         messages = [
             {"role": "system", "content": system},
@@ -185,8 +220,17 @@ class MlxWorker:
     def step(self, *, goal: str, system: str, history: list[dict]) -> WorkerAction:
         self.last_system = system
         self._ensure()
-        prompt = self._prompt(goal=goal, system=system, history=history)
+        prompt = self._prompt(goal=goal, system=system, history=history, idle=False)
         return parse_action(self._call_generate(prompt))
+
+    def think(self, *, goal: str, system: str, history: list[dict]) -> WorkerAction:
+        self.last_system = system
+        self._ensure()
+        prompt = self._prompt(goal=goal, system=system, history=history, idle=True)
+        action = parse_action(self._call_generate(prompt))
+        if action.kind == "unsure" and not action.thought:
+            action = WorkerAction(kind="thought", thought="idle: still here, no coach")
+        return action
 
 
 def make_worker(

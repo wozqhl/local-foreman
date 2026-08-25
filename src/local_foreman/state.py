@@ -1,4 +1,4 @@
-"""Loop states: act | ask | apply."""
+"""Loop states: act | ask | apply. idle is extra (local think, never coach)."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ class State(str, Enum):
     ACT = "act"
     ASK = "ask"
     APPLY = "apply"
+    IDLE = "idle"
 
 
 # Escalate only for these reasons (see protocol.md).

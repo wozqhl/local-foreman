@@ -16,6 +16,7 @@
     --got: #3c8d7a;
     --go: #7aa35a;
     --danger: #c45c4a;
+    --idle: #7d8ea3;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink);
@@ -41,6 +42,7 @@
   .dot.got { background: var(--got); animation: none; }
   .dot.go { background: var(--go); animation: none; }
   .dot.work { background: var(--work); }
+  .dot.idle { background: var(--idle); animation: none; }
   @keyframes pulse { 50% { box-shadow: 0 0 0 10px rgba(227,107,45,.04); } }
   .status-label { font-size: 28px; font-weight: 700; letter-spacing: .04em; }
   .status-hint { color: var(--muted); font-size: 13px; margin-top: 4px; }
@@ -59,6 +61,7 @@
   .tag.stuck, .tag.asked_coach { color: var(--ask); }
   .tag.coach_instruction { color: var(--got); }
   .tag.resumed { color: var(--go); }
+  .tag.thought { color: var(--idle); }
   footer { margin-top: 18px; color: var(--muted); font-size: 12px; }
 </style>
 </head>
@@ -67,7 +70,7 @@
   <header>
     <div>
       <h1>Local Foreman · 本机看板</h1>
-      <div class="sub">完整闭环：本地模型干活 → 把问题说清楚 → 询问大模型 → 按指示继续。本页只跑在 127.0.0.1，mock 演示不用 key。</div>
+      <div class="sub">完整闭环：本地模型干活 → 把问题说清楚 → 询问大模型 → 按指示继续。空转时本地自己想，写入同一条轨迹，不问教练。本页只跑在 127.0.0.1，mock 演示不用 key。</div>
     </div>
     <button id="rerun" type="button">再跑一遍演示</button>
   </header>
@@ -93,13 +96,17 @@
       <h2>教练指示 last instruction</h2>
       <p id="instruction" class="empty">（还没有收到指示）</p>
     </article>
+    <article class="card">
+      <h2>心思 mind</h2>
+      <p id="mind" class="empty">（还没有空转想法）</p>
+    </article>
   </section>
 
   <section class="log">
-    <h2>事件日志 work / stuck+problem / asked_coach / coach_instruction / resumed</h2>
+    <h2>心思 / 事件 work · thought · stuck · asked_coach · coach_instruction · resumed</h2>
     <div id="log"></div>
   </section>
-  <footer>只监听 127.0.0.1:8765 · python -m local_foreman ui · 求助中会标明正在咨询大模型</footer>
+  <footer>只监听 127.0.0.1:8765 · python -m local_foreman ui · 求助中会标明正在咨询大模型 · 空转中 / 自己在想 不是求助</footer>
 </div>
 <script>
 const LABELS = {
@@ -107,7 +114,8 @@ const LABELS = {
   stuck: "求助中（正在咨询大模型）",
   asked_coach: "求助中（正在咨询大模型）",
   coach_instruction: "已收到指示",
-  resumed: "继续"
+  resumed: "继续",
+  thought: "自己在想"
 };
 const HINTS = {
   work: "本地模型正在干活",
@@ -115,15 +123,19 @@ const HINTS = {
   asked_coach: "求助中（正在咨询大模型）",
   coach_instruction: "大模型已经给出指示",
   resumed: "本地模型按指示继续",
+  thought: "本地空转，自己在想，没有问教练",
   act: "本地模型正在干活",
   ask: "求助中（正在咨询大模型）",
-  apply: "已收到指示，准备继续"
+  apply: "已收到指示，准备继续",
+  idle: "空转中：本地在等下一次自己想，不问教练"
 };
 function esc(s) {
   return String(s || "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 function labelOf(snap) {
   const last = (snap.events || [])[snap.events.length - 1];
+  if (last && last.kind === "thought") return "自己在想";
+  if (snap.state === "idle") return "空转中";
   if (last && LABELS[last.kind]) return LABELS[last.kind];
   if (snap.state_label) return snap.state_label;
   if (snap.state === "ask") return "求助中（正在咨询大模型）";
@@ -138,6 +150,7 @@ function paint(snap) {
   const dot = document.getElementById("dot");
   dot.className = "dot " + (last.kind === "asked_coach" || last.kind === "stuck" || snap.state === "ask" ? "ask"
     : last.kind === "coach_instruction" || snap.state === "apply" ? "got"
+    : last.kind === "thought" || snap.state === "idle" ? "idle"
     : last.kind === "resumed" ? "go" : "work");
   const goal = document.getElementById("goal");
   goal.textContent = snap.goal || "（还没有目标）";
@@ -148,6 +161,13 @@ function paint(snap) {
   const ins = document.getElementById("instruction");
   ins.textContent = snap.instruction || "（还没有收到指示）";
   ins.className = snap.instruction ? "" : "empty";
+  const thoughts = (snap.events || []).filter(e => e.kind === "thought");
+  const mind = document.getElementById("mind");
+  if (mind) {
+    const lastThought = thoughts.length ? thoughts[thoughts.length - 1].message : "";
+    mind.textContent = lastThought || "（还没有空转想法）";
+    mind.className = lastThought ? "" : "empty";
+  }
   const log = document.getElementById("log");
   log.innerHTML = (snap.events || []).map(ev => {
     const tag = LABELS[ev.kind] || ev.kind;

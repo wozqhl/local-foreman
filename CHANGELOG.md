@@ -2,6 +2,16 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.2.0] — 2026-08-26
+
+### Added
+
+- 一条 append-only 轨迹 jsonl（`LOCAL_FOREMAN_TRAJ`，默认 `.local-foreman/traj.jsonl`）。现有事件加上新的 `thought`，与看板 SSE 共用同一份日志，重启还能接着写。
+- 空转本地思考 + 指数退避：没 Ticket、没在跑工具时，本地 Worker 写一句短独白。不问教练。新目标或进入 `ask` 会重置间隔。`ui` 默认 persist+idle；一次性 CLI 仍任务驱动，除非 `--persist` / `LOCAL_FOREMAN_PERSIST=1`。
+- 分层压缩：最近原文，更老的本地摘要。不编造记忆，不改写 jsonl，不走远程教练。
+- 看板中文状态增加：空转中 / 自己在想。空转不会标成正在咨询大模型。
+- Smoke 新 token：`traj-ok`、`idle-ok`、`compact-ok`。原有 token 保留，仍只走 mock。
+
 ## [0.1.1] — 2026-08-25
 
 ### Added

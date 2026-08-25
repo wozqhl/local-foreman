@@ -1,4 +1,8 @@
-"""CLI: python -m local_foreman "goal" | local-foreman ui | --smoke"""
+"""CLI: python -m local_foreman "goal" | local-foreman ui | --smoke
+
+One-shot stays task-driven unless --persist / LOCAL_FOREMAN_PERSIST=1.
+`ui` defaults persist+idle ON. Idle think never calls the coach.
+"""
 
 from __future__ import annotations
 
@@ -6,13 +10,16 @@ import argparse
 import json
 import os
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Optional
 
 from local_foreman.coach import MockCoach
-from local_foreman.loop import COACH_INSTRUCTION_HEADER, ForemanLoop
+from local_foreman.loop import COACH_INSTRUCTION_HEADER, ENV_PERSIST, ForemanLoop, env_flag
 from local_foreman.ticket import problem_is_clear
+from local_foreman.traj import Trajectory, compact_entries
 from local_foreman.worker import MockWorker, WorkerAction
 
 
@@ -21,15 +28,25 @@ def _root() -> Path:
     return Path(env) if env else Path.cwd()
 
 
-def run_goal(goal: str, *, user_review: bool = False, max_steps: int = 12) -> int:
+def run_goal(
+    goal: str,
+    *,
+    user_review: bool = False,
+    max_steps: int = 12,
+    persist: Optional[bool] = None,
+) -> int:
     def on_state(name: str) -> None:
         print(name, flush=True)
 
+    if persist is None:
+        persist = env_flag(ENV_PERSIST)
     loop = ForemanLoop(
         root=_root(),
         user_review=user_review,
         max_steps=max_steps,
         on_state=on_state,
+        persist=persist,
+        idle=persist,
     )
     result = loop.run(goal)
     print("done=" + result.done_reason)
@@ -48,7 +65,7 @@ def run_goal(goal: str, *, user_review: bool = False, max_steps: int = 12) -> in
 def run_ui(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="local-foreman ui",
-        description="本机看板：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续",
+        description="本机看板：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想",
     )
     parser.add_argument(
         "--host",
@@ -132,9 +149,184 @@ def _smoke_ui(root: Path, errors: list[str]) -> None:
             stop_ui(httpd)
 
 
+
+def _smoke_traj(root: Path, errors: list[str]) -> None:
+    tmp = Path(tempfile.mkdtemp(prefix="lf-traj-"))
+    path = tmp / "traj.jsonl"
+    push_cmd = "git " + "push" + " origin HEAD"
+    worker = MockWorker(script=[
+        WorkerAction(kind="tool", tool="read", args={"path": "README.md"}, thought="safe read"),
+        WorkerAction(kind="tool", tool="shell", args={"cmd": push_cmd}, thought="fake remote"),
+        WorkerAction(kind="done", thought="after persist"),
+    ])
+    coach = MockCoach(["continue"])
+    loop = ForemanLoop(
+        worker=worker,
+        coach=coach,
+        root=root,
+        max_steps=10,
+        persist=True,
+        idle=False,
+        traj_path=path,
+    )
+    res = loop.run("smoke: persist traj")
+    if not path.is_file():
+        errors.append("traj-ok: jsonl not written")
+        return
+    loaded = Trajectory(path)
+    if not loaded.entries:
+        errors.append("traj-ok: jsonl empty after restart load")
+        return
+    kinds = [e.get("kind") for e in loaded.entries]
+    need = ("work", "stuck", "asked_coach", "coach_instruction", "resumed")
+    missing = [k for k in need if k not in kinds]
+    if missing:
+        errors.append("traj-ok: missing " + ",".join(missing) + " got=" + str(kinds))
+        return
+    has_goal = any(e.get("goal") == "smoke: persist traj" for e in loaded.entries)
+    has_ticket = any(isinstance(e.get("ticket"), dict) for e in loaded.entries)
+    has_reply = any(isinstance(e.get("reply"), dict) for e in loaded.entries)
+    has_obs = any(e.get("observation") for e in loaded.entries)
+    if not (has_goal and has_ticket and has_reply and has_obs):
+        errors.append(
+            "traj-ok: incomplete fields goal/ticket/reply/observation "
+            + str((has_goal, has_ticket, has_reply, has_obs))
+        )
+        return
+    if res.tickets < 1:
+        errors.append("traj-ok: expected a coach ticket on the persist path")
+        return
+    # same source: in-memory events match disk
+    disk_kinds = [e.get("kind") for e in loaded.entries[-len(res.events):]]
+    mem_kinds = [e.get("kind") for e in res.events]
+    if disk_kinds != mem_kinds:
+        errors.append("traj-ok: disk/memory kinds diverge " + str(disk_kinds) + " vs " + str(mem_kinds))
+        return
+    print("traj-ok")
+
+
+def _smoke_idle(root: Path, errors: list[str]) -> None:
+    tmp = Path(tempfile.mkdtemp(prefix="lf-idle-"))
+    path = tmp / "traj.jsonl"
+    worker = MockWorker(script=[
+        WorkerAction(kind="tool", tool="read", args={"path": "README.md"}, thought="safe read"),
+        WorkerAction(kind="done", thought="idle after work"),
+    ])
+    coach = MockCoach(["halt"])
+    slept: list[float] = []
+
+    def sleeper(sec: float) -> None:
+        slept.append(sec)
+
+    loop = ForemanLoop(
+        worker=worker,
+        coach=coach,
+        root=root,
+        max_steps=12,
+        persist=True,
+        idle=True,
+        idle_start=1.0,
+        idle_cap=8.0,
+        idle_max=3,
+        traj_path=path,
+        sleeper=sleeper,
+    )
+    res = loop.run("smoke: idle think")
+    if coach.calls:
+        errors.append("idle-ok: idle path called coach " + str(len(coach.calls)))
+        return
+    if "ask" in res.states or "apply" in res.states:
+        errors.append("idle-ok: idle leaked to coach states=" + str(res.states))
+        return
+    if "idle" not in res.states:
+        errors.append("idle-ok: never entered idle states=" + str(res.states))
+        return
+    thoughts = [e for e in res.events if e.get("kind") == "thought"]
+    if len(thoughts) < 3:
+        errors.append("idle-ok: expected 3 thoughts got " + str(len(thoughts)))
+        return
+    if res.idle_intervals != [1.0, 2.0, 4.0]:
+        errors.append("idle-ok: backoff intervals=" + str(res.idle_intervals))
+        return
+    if not path.is_file():
+        errors.append("idle-ok: traj missing")
+        return
+    loaded = Trajectory(path)
+    if not any(e.get("kind") == "thought" for e in loaded.entries):
+        errors.append("idle-ok: thought not persisted")
+        return
+    # New goal resets backoff
+    loop2 = ForemanLoop(
+        worker=MockWorker(script=[WorkerAction(kind="done", thought="second goal")]),
+        coach=coach,
+        root=root,
+        max_steps=6,
+        persist=True,
+        idle=True,
+        idle_start=1.0,
+        idle_cap=8.0,
+        idle_max=1,
+        traj_path=path,
+        sleeper=lambda _s: None,
+    )
+    res2 = loop2.run("smoke: new goal resets backoff")
+    if res2.idle_intervals[:1] != [1.0]:
+        errors.append("idle-ok: new goal did not reset backoff " + str(res2.idle_intervals))
+        return
+    if coach.calls:
+        errors.append("idle-ok: second goal called coach")
+        return
+    print("idle-ok")
+
+
+def _smoke_compact(errors: list[str]) -> None:
+    entries = [
+        {"kind": "work", "message": f"step-{i}", "seq": i}
+        for i in range(30)
+    ]
+    out = compact_entries(entries, recent=4, layer=4)
+    if not out:
+        errors.append("compact-ok: empty compact")
+        return
+    verbatim = [x for x in out if x.get("role") == "verbatim"]
+    summaries = [x for x in out if x.get("role") == "summary" or x.get("kind") == "summary"]
+    if len(verbatim) != 4:
+        errors.append("compact-ok: expected 4 recent verbatim got " + str(len(verbatim)))
+        return
+    vmsgs = [str(x.get("message") or "") for x in verbatim]
+    if vmsgs != ["step-26", "step-27", "step-28", "step-29"]:
+        errors.append("compact-ok: recent not verbatim " + str(vmsgs))
+        return
+    if not summaries:
+        errors.append("compact-ok: older entries were not summarized")
+        return
+    # older standalone verbatim must not include the oldest line
+    if any(x.get("message") == "step-0" for x in verbatim):
+        errors.append("compact-ok: oldest entry still verbatim")
+        return
+    joined = " ".join(str(s.get("message") or "") for s in summaries)
+    if "summarized" not in joined:
+        errors.append("compact-ok: summary missing extractive marker")
+        return
+    if "step-0" not in joined:
+        errors.append("compact-ok: extractive summary dropped older text")
+        return
+    # do not invent: summary text is built from existing kind/message only
+    if "remembered" in joined.lower() or "invented" in joined.lower():
+        errors.append("compact-ok: summary invented extra words")
+        return
+    print("compact-ok")
+
+
 def run_smoke() -> int:
     root = Path(__file__).resolve().parents[2]
     errors = []
+    os.environ["LOCAL_FOREMAN_WORKER"] = "mock"
+    os.environ["LOCAL_FOREMAN_COACH"] = "mock"
+    os.environ["LOCAL_FOREMAN_PERSIST"] = "0"
+    os.environ["LOCAL_FOREMAN_TRAJ"] = str(
+        Path(tempfile.mkdtemp(prefix="lf-smoke-")) / "traj.jsonl"
+    )
 
     act_worker = MockWorker(script=[
         WorkerAction(kind="tool", tool="read", args={"path": "README.md"}, thought="safe read"),
@@ -206,6 +398,10 @@ def run_smoke() -> int:
     if (root / "LICENSE").is_file() and (root / ".github" / "workflows" / "smoke.yml").is_file():
         print("oss-ok")
 
+    _smoke_traj(root, errors)
+    _smoke_idle(root, errors)
+    _smoke_compact(errors)
+
     if errors:
         for e in errors:
             print("SMOKE FAIL: " + e, file=sys.stderr)
@@ -236,12 +432,19 @@ def main(argv=None) -> int:
         help="coach backend (default: $LOCAL_FOREMAN_COACH or mock)",
     )
     parser.add_argument("--max-steps", type=int, default=12, metavar="N")
+    parser.add_argument(
+        "--persist",
+        action="store_true",
+        help="write traj jsonl and idle-think (or set LOCAL_FOREMAN_PERSIST=1)",
+    )
     args = parser.parse_args(raw)
 
     if args.worker:
         os.environ["LOCAL_FOREMAN_WORKER"] = args.worker
     if args.coach:
         os.environ["LOCAL_FOREMAN_COACH"] = args.coach
+    if args.persist:
+        os.environ["LOCAL_FOREMAN_PERSIST"] = "1"
 
     if args.smoke:
         os.environ["LOCAL_FOREMAN_WORKER"] = "mock"
@@ -253,7 +456,12 @@ def main(argv=None) -> int:
         parser.print_help()
         return 2
     try:
-        return run_goal(goal, user_review=args.review, max_steps=args.max_steps)
+        return run_goal(
+            goal,
+            user_review=args.review,
+            max_steps=args.max_steps,
+            persist=bool(args.persist) or env_flag(ENV_PERSIST),
+        )
     except (RuntimeError, ValueError) as exc:
         print("error: " + str(exc), file=sys.stderr)
         return 1

@@ -1,7 +1,10 @@
 """Local live board: stdlib HTTP + SSE on 127.0.0.1:8765.
 
-Chinese status: 干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续.
+Chinese status: 干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 /
+空转中 / 自己在想.
 Mock demo needs no keys: read → fake escalate → apply continue.
+UI defaults persist+idle ON so the board grows a mind log. Idle never
+asks the coach.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ from urllib.parse import parse_qs, urlparse
 
 from local_foreman.coach import MockCoach
 from local_foreman.loop import ForemanLoop
+from local_foreman.traj import Trajectory, default_traj_path
 from local_foreman.worker import MockWorker, WorkerAction
 
 DEFAULT_HOST = "127.0.0.1"
@@ -27,6 +31,7 @@ STATE_LABELS = {
     "act": "干活中",
     "ask": "求助中（正在咨询大模型）",
     "apply": "已收到指示",
+    "idle": "空转中",
 }
 EVENT_LABELS = {
     "work": "干活中",
@@ -34,10 +39,16 @@ EVENT_LABELS = {
     "asked_coach": "求助中（正在咨询大模型）",
     "coach_instruction": "已收到指示",
     "resumed": "继续",
+    "thought": "自己在想",
 }
 
 
 def state_label(state: str, last_kind: str = "") -> str:
+    # Idle is local. Never reuse the coach-consult copy.
+    if last_kind == "thought":
+        return "自己在想"
+    if state == "idle":
+        return "空转中"
     if last_kind in EVENT_LABELS:
         return EVENT_LABELS[last_kind]
     return STATE_LABELS.get(state, "干活中")
@@ -98,9 +109,26 @@ class LiveBoard:
                 self.state = "ask"
             elif kind == "coach_instruction":
                 self.state = "apply"
+            elif kind == "thought":
+                self.state = "idle"
             elif kind in {"resumed", "work"}:
                 self.state = "act"
         self._broadcast(self.snapshot())
+
+    def load_traj(self, path) -> None:
+        traj = Trajectory(path)
+        with self.lock:
+            self.events = list(traj.entries)
+            if traj.entries:
+                last = traj.entries[-1]
+                self.goal = str(last.get("goal") or self.goal)
+                if last.get("problem"):
+                    self.problem = str(last["problem"])
+                if last.get("instruction"):
+                    self.instruction = str(last["instruction"])
+                st = str(last.get("state") or "")
+                if st:
+                    self.state = st
 
     def subscribe(self) -> queue.Queue:
         q: queue.Queue = queue.Queue(maxsize=200)
@@ -127,8 +155,22 @@ class LiveBoard:
                 pass
 
 
-def run_demo(board: LiveBoard, root: Path, *, pace: float = 0.0) -> dict:
-    """Mock-only: safe read, fake remote escalate, coach continue, resume."""
+def run_demo(
+    board: LiveBoard,
+    root: Path,
+    *,
+    pace: float = 0.0,
+    persist: bool = True,
+    idle: bool = False,
+    idle_max: Optional[int] = None,
+    max_steps: int = 10,
+    traj_path: Optional[Path] = None,
+) -> dict:
+    """Mock-only: safe read, fake remote escalate, coach continue, resume.
+
+    persist defaults ON so the mind log is the same jsonl the loop writes.
+    idle is off for the sync smoke demo (must finish); the live UI turns it on.
+    """
     if not board.demo_lock.acquire(blocking=False):
         return board.snapshot()
     board.demo_running = True
@@ -167,10 +209,14 @@ def run_demo(board: LiveBoard, root: Path, *, pace: float = 0.0) -> dict:
             worker=worker,
             coach=coach,
             root=root,
-            max_steps=10,
+            max_steps=max_steps,
             on_state=on_state,
             on_event=on_event,
             pace=pace,
+            persist=persist,
+            idle=idle,
+            idle_max=idle_max,
+            traj_path=traj_path,
         )
         loop.run(DEMO_GOAL)
         return board.snapshot()
@@ -232,12 +278,19 @@ def make_handler(board: LiveBoard, root: Path):
             else:
                 pace = 0.0 if sync else 0.4
             if sync:
-                snap = run_demo(board, root, pace=0.0)
+                snap = run_demo(board, root, pace=0.0, persist=True, idle=False)
                 self._json(snap)
                 return
             threading.Thread(
                 target=run_demo,
-                kwargs={"board": board, "root": root, "pace": pace},
+                kwargs={
+                    "board": board,
+                    "root": root,
+                    "pace": pace,
+                    "persist": True,
+                    "idle": True,
+                    "max_steps": 0,
+                },
                 daemon=True,
             ).start()
             self._json({"ok": True, "started": True, **board.snapshot()})
@@ -308,12 +361,20 @@ def serve_forever(
     httpd, board = make_server(host, port, root)
     actual = httpd.server_address[1]
     print(f"本机看板: http://{host}:{actual}/", flush=True)
-    print("状态：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续", flush=True)
-    print("mock 演示无需 API key。Ctrl+C 退出。", flush=True)
+    print("状态：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想", flush=True)
+    print("mock 演示无需 API key。空转只在本地想，不问教练。Ctrl+C 退出。", flush=True)
+    board.load_traj(default_traj_path(root))
     if auto_demo:
         threading.Thread(
             target=run_demo,
-            kwargs={"board": board, "root": root, "pace": 0.4},
+            kwargs={
+                "board": board,
+                "root": root,
+                "pace": 0.4,
+                "persist": True,
+                "idle": True,
+                "max_steps": 0,
+            },
             daemon=True,
         ).start()
     try:
