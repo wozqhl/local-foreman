@@ -1275,10 +1275,13 @@ def _smoke_demo(root: Path, errors: list[str]) -> None:
         errors.append("demo-ok: cache empty after accept")
         return
     rec = cached[-1]
-    for key in ("task_sketch", "claim", "path"):
+    for key in ("goal", "task_sketch", "claim", "path"):
         if not rec.get(key):
             errors.append("demo-ok: missing " + key)
             return
+    if "demo cache write" not in str(rec.get("goal") or "") and "demo cache" not in str(rec.get("task_sketch") or ""):
+        errors.append("demo-ok: goal/task_sketch missing the seed goal")
+        return
     if rec.get("path") != "note.txt":
         errors.append("demo-ok: path=" + str(rec.get("path")))
         return
@@ -1374,6 +1377,70 @@ def _smoke_demo(root: Path, errors: list[str]) -> None:
     ).run("smoke: demo ask must not cache")
     if demo4.is_file() and load_demos(demo4):
         errors.append("demo-ok: ask path stored a demo")
+        return
+
+    # LOCAL_FOREMAN_DEMOS overrides the default .local-foreman/demos.jsonl path.
+    tmp5 = Path(tempfile.mkdtemp(prefix="lf-demo-env-"))
+    custom = tmp5 / "custom-demos.jsonl"
+    prev = os.environ.get("LOCAL_FOREMAN_DEMOS")
+    os.environ["LOCAL_FOREMAN_DEMOS"] = str(custom)
+    try:
+        coach5 = MockCoach(verify_verdicts=["accept"])
+        worker5 = MockWorker(script=[
+            WorkerAction(
+                kind="tool",
+                tool="write",
+                args={"path": "env-note.txt", "content": "via env"},
+                thought="draft write",
+                confidence=0.4,
+            ),
+            WorkerAction(kind="done", thought="after env demo"),
+        ])
+        ForemanLoop(
+            worker=worker5, coach=coach5, root=tmp5, max_steps=10,
+            persist=False, idle=False,
+        ).run("smoke: demo cache via LOCAL_FOREMAN_DEMOS")
+    finally:
+        if prev is None:
+            os.environ.pop("LOCAL_FOREMAN_DEMOS", None)
+        else:
+            os.environ["LOCAL_FOREMAN_DEMOS"] = prev
+    if not custom.is_file() or not load_demos(custom):
+        errors.append("demo-ok: LOCAL_FOREMAN_DEMOS did not receive the cache")
+        return
+    default_under_root = tmp5 / ".local-foreman" / "demos.jsonl"
+    if default_under_root.is_file() and load_demos(default_under_root):
+        errors.append("demo-ok: env override still wrote default demos.jsonl")
+        return
+
+    # Path overlap (not just goal): seed a demo, then a different goal writing the same path.
+    tmp6 = Path(tempfile.mkdtemp(prefix="lf-demo-path-"))
+    demo6 = tmp6 / "demos.jsonl"
+    from local_foreman.demo import store_demo as _store
+    _store(demo6, compact_demo(
+        goal="alpha-unique-seed-goal",
+        claim="Claim: wrote overlap.txt",
+        path="overlap.txt",
+        draft="overlap body",
+    ))
+    worker6 = MockWorker(script=[
+        WorkerAction(
+            kind="tool",
+            tool="write",
+            args={"path": "overlap.txt", "content": "second"},
+            thought="same path later",
+            confidence=0.4,
+        ),
+        WorkerAction(kind="done", thought="after path overlap"),
+    ])
+    loop6 = ForemanLoop(
+        worker=worker6, coach=MockCoach(verify_verdicts=["accept"]),
+        root=tmp6, max_steps=10, persist=False, idle=False, demo_path=demo6,
+    )
+    loop6.run("please update overlap.txt with no shared sketch words")
+    sys6 = worker6.last_system or ""
+    if DEMO_CONTEXT_HEADER not in sys6 or "overlap.txt" not in sys6:
+        errors.append("demo-ok: path overlap did not inject demo")
         return
     print("demo-ok")
 

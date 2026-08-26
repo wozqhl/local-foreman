@@ -22,7 +22,7 @@
 - **raw confidence 不是唯一门**（AutoMix）。路由先看工具种类（读留下、写核对），再叠加本地检查 / 校准率。
 - **先本地自核再花钱**（AutoMix）：worker 或廉价检查给 pending claim 打 p。p 很低两次且不是升级条件，则不要把无望的活送给教练烧 token；p 高且已有 CRITIC 本地检查则留在 LOW。
 - 有本地检查且通过（CRITIC：例如 `.py` 干跑 `ast.parse`）则跳过 verify，直接落盘。
-- **成功落盘的 write 做本地 demo 缓存**（EcoAssistant）：`verify` accept 后把 `(task_sketch, claim, draft/path)` 存在 `.local-foreman`，以后相似 write 注入 1–2 条 demo。只存本地，不存教练改写。
+- **成功落盘的 write 做本地 demo 缓存**（EcoAssistant）：`verify` accept 后把 `{goal/task_sketch, claim, path, draft excerpt}` 追加到 `.local-foreman/demos.jsonl`（或 `LOCAL_FOREMAN_DEMOS`）。以后 path/goal 相近的 write 注入 1–2 条。只存本地，不存教练改写。
 
 `git push` / remote write **必须**先 `ask`，禁止在 `act` 里直接执行。空转本身不问教练；空转动手仍走 `act` + HIGH 四条，MID verify 会跳过。
 

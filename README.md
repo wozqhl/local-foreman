@@ -160,6 +160,7 @@ python3 -m pip install -e '.[mlx]'
 | `COACH_USD_PER_ASK` | 美元/次 | 可选。设置后 `traj --stats` 与看板才估算费用；未设置只计次数 |
 | `LOCAL_FOREMAN_MAX_ASKS` | 整数 | 可选。教练询问硬上限。再问一次会超过则跳过 ask，留在本地（空转或 halt），不调用教练。未设置不设上限 |
 | `LOCAL_FOREMAN_MAX_VERIFIES` | 整数 | 可选。核对硬上限。再核一次会超过则跳过 verify，留在本地。未设置不设上限 |
+| `LOCAL_FOREMAN_DEMOS` | 路径 | 可选。EcoAssistant demo 缓存 jsonl。默认 `<cwd>/.local-foreman/demos.jsonl`。只存本地 compact demo，不存教练改写 |
 
 CLI 的 `--worker` / `--coach` 会覆盖对应环境变量。`--smoke` 会强制两边都是 mock。
 

@@ -1,8 +1,10 @@
 """EcoAssistant-style local demo cache.
 
 On verify accept (file landed) store a compact
-(task_sketch, claim, draft/path) next to traj in `.local-foreman`.
-Later similar writes inject 1-2 demos into the worker system prompt.
+{goal, task_sketch, claim, path, draft excerpt} in
+`.local-foreman/demos.jsonl` (or LOCAL_FOREMAN_DEMOS).
+Later similar writes (path or goal overlap) inject 1-2 demos
+into the worker system prompt.
 
 Local-only. Never store coach rewrites / instructions / verdicts.
 """
@@ -10,15 +12,18 @@ Local-only. Never store coach rewrites / instructions / verdicts.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, Optional
 
 from local_foreman.traj import default_state_dir
 
+ENV_DEMOS = "LOCAL_FOREMAN_DEMOS"
 DEMO_FILENAME = "demos.jsonl"
 DEMO_CONTEXT_HEADER = "## Local demos (EcoAssistant, local-only)"
 
+MAX_GOAL = 160
 MAX_SKETCH = 80
 MAX_CLAIM = 160
 MAX_DRAFT = 200
@@ -38,6 +43,9 @@ FORBIDDEN_KEYS = (
 
 
 def default_demo_path(cwd: Optional[Path] = None) -> Path:
+    raw = (os.environ.get(ENV_DEMOS) or "").strip()
+    if raw:
+        return Path(raw)
     return default_state_dir(cwd) / DEMO_FILENAME
 
 
@@ -68,6 +76,7 @@ def compact_demo(
 ) -> dict[str, str]:
     """Compact local triple. Coach rewrite fields are dropped."""
     rec = {
+        "goal": _short(goal, MAX_GOAL),
         "task_sketch": task_sketch(goal, path),
         "claim": _short(claim, MAX_CLAIM),
         "path": _short(path, MAX_PATH),
@@ -80,7 +89,8 @@ def compact_demo(
 
 def _sanitize(rec: dict[str, Any]) -> dict[str, str]:
     clean = {
-        "task_sketch": _short(str(rec.get("task_sketch") or ""), MAX_SKETCH),
+        "goal": _short(str(rec.get("goal") or ""), MAX_GOAL),
+        "task_sketch": _short(str(rec.get("task_sketch") or rec.get("goal") or ""), MAX_SKETCH),
         "claim": _short(str(rec.get("claim") or ""), MAX_CLAIM),
         "path": _short(str(rec.get("path") or ""), MAX_PATH),
         "draft": _short(str(rec.get("draft") or ""), MAX_DRAFT),
@@ -128,7 +138,11 @@ def _tokens(text: str) -> set[str]:
 
 
 def _similarity(demo: dict[str, str], *, goal: str, path: str = "") -> float:
-    left = _tokens(demo.get("task_sketch") or "") | _tokens(demo.get("path") or "")
+    left = (
+        _tokens(demo.get("task_sketch") or "")
+        | _tokens(demo.get("goal") or "")
+        | _tokens(demo.get("path") or "")
+    )
     right = _tokens(goal) | _tokens(path)
     if not left or not right:
         return 0.0

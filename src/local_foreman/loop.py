@@ -239,6 +239,7 @@ class ForemanLoop:
         self._pending_verify_risk = "none"
         self.demo_path = Path(demo_path) if demo_path else default_demo_path(self.root)
         self._goal = ""
+        self._last_write_path = ""
         self._low_p_streak = 0
 
     def _reset_backoff(self) -> None:
@@ -246,7 +247,11 @@ class ForemanLoop:
 
     def _system(self) -> str:
         parts = [WORKER_SYSTEM]
-        demos = similar_demos(load_demos(self.demo_path), goal=self._goal)
+        demos = similar_demos(
+            load_demos(self.demo_path),
+            goal=self._goal,
+            path=self._last_write_path,
+        )
         if demos:
             body = render_demos(demos)
             if body:
@@ -616,6 +621,7 @@ class ForemanLoop:
     ) -> None:
         rec = compact_demo(goal=goal, claim=claim, path=path, draft=draft)
         stored = store_demo(self.demo_path, rec)
+        self._last_write_path = path
         self._emit(
             result,
             EVENT_DEMO,
@@ -909,6 +915,7 @@ class ForemanLoop:
         self._pending_draft = ""
         self._pending_verify_risk = "none"
         self._goal = goal
+        self._last_write_path = ""
         self._low_p_streak = 0
         state = State.ACT
         fail_streak = 0
