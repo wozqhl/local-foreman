@@ -14,7 +14,13 @@
 | MID | 本地拟好的 `write`（非 `.git`） | `verify` 短票，教练不重写文件 | `verify` |
 | HIGH | 原四条：同工具连败两次、即将 mutate git / remote / `git push`、用户 review、Worker `unsure` | `ask`（stuck ticket） | `ask` |
 
-级联：一次失败可进核对；核对 accept 率滚动低于 0.5 时，下一笔 write 升到 `ask`（speculation tax）。有本地检查且通过（CRITIC：例如 `.py` 干跑 `ast.parse`）则跳过 verify，直接落盘。
+级联与从文献里偷来的约束（不是已证明的成绩）：
+
+- **动作级核对要的是教练等价结果，不是 token 一字不差**（Leviathan / Speculative Actions / ISP）。accept 表示「教练自己也会走这一步」，不是字符串相等。
+- **不要每笔 write 都核对**：滚动 accept 率已经高时，跳过 verify，直接落盘（DSP）。率低（< 0.5）则下一笔 write 升到 `ask`（speculation tax）。
+- **一次工具失败先本地自修**（EcoAssistant），不要立刻 HIGH ask；**两次失败才 ask**。一次失败也可以进 MID 核对。
+- **raw confidence 不是唯一门**（AutoMix）。路由先看工具种类（读留下、写核对），再叠加本地检查 / 校准率。
+- 有本地检查且通过（CRITIC：例如 `.py` 干跑 `ast.parse`）则跳过 verify，直接落盘。
 
 `git push` / remote write **必须**先 `ask`，禁止在 `act` 里直接执行。空转本身不问教练；空转动手仍走 `act` + HIGH 四条，MID verify 会跳过。
 
@@ -36,7 +42,7 @@
 
 循环：`act` →（low 留下 \| verify \| ask）→ `apply` → `act`。`halt` 在 `apply` 结束。`idle` 不进入这条闭环。
 
-事件：`work` / `stuck` / `asked_coach` / `coach_instruction` / `resumed` / `thought` / `retrieved` / `idle_act` / `verified_coach` / `coach_verdict` / `lesson`。`verified_coach` **不计入** `asked_coach`。`lesson` 是 Reflexion 的一行教训，retrieve 可以捡回来。
+事件：`work` / `stuck` / `asked_coach` / `coach_instruction` / `resumed` / `thought` / `retrieved` / `idle_act` / `verified_coach` / `coach_verdict` / `lesson`。`verified_coach` **不计入** `asked_coach`。`lesson` 是 Reflexion 的一行教训（revise 时追加），retrieve 可以捡回来。`coach_verdict` 带 `(conf, act, verdict)`，留给以后 EAGLE-2 校准，不当当场的唯一门。
 
 ## Verify 票（MID，不是 stuck）
 
@@ -118,15 +124,20 @@ Local **必须**把 `instruction` 写进下一轮 Worker system prompt（`## Coa
 
 ## Related
 
-只列本协议真正用到的工作，不扩写：
+只列本协议真正用到的工作，不扩写、不发明链接：
 
-- Leviathan et al., speculative decoding (ICML 2023) — https://arxiv.org/abs/2211.17192
-- Speculative Actions (Ye et al., Columbia, arXiv 2510.04371) — https://arxiv.org/abs/2510.04371
-- FrugalGPT (Chen, Zaharia, Zou, TMLR 2024) — https://arxiv.org/abs/2305.05176
+- Leviathan speculative decoding — https://arxiv.org/abs/2211.17192
+- Speculative Actions (Ye et al.) — https://arxiv.org/abs/2510.04371
+- Interactive Speculative Planning — https://arxiv.org/abs/2410.00079
+- Dynamic Speculative Planning — https://arxiv.org/abs/2509.01920
+- FrugalGPT — https://arxiv.org/abs/2305.05176
+- AutoMix — https://arxiv.org/abs/2310.12963
 - RouteLLM — https://github.com/lm-sys/RouteLLM
+- EAGLE-2 — https://arxiv.org/abs/2406.16858
 - aider architect/editor — https://aider.chat/2024/09/26/architect.html
-- CRITIC (Gou et al., ICLR 2024) — https://arxiv.org/abs/2305.11738
-- Reflexion (Shinn et al., 2023) — https://arxiv.org/abs/2303.11366
+- CRITIC — https://arxiv.org/abs/2305.11738
+- Reflexion — https://arxiv.org/abs/2303.11366
+- EcoAssistant — https://arxiv.org/abs/2310.03046
 
 ## Tools v1
 
