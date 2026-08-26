@@ -31,6 +31,8 @@
 - [x] AutoMix 本地自核（低 p 两次且非升级则不烧教练）
 - [x] EcoAssistant demo 缓存（verify accept 后本地注入）
 - [x] Smoke：`self-verify-ok` / `demo-ok`
+- [x] EAGLE-2 滚动校准（P(accept|conf_bucket,act_type) 够样本才跳过 verify）
+- [x] Smoke：`calibrate-ok`
 
 ## 0.3 — Worker 更稳
 

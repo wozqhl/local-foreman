@@ -20,6 +20,14 @@ EcoAssistant demo cache: on verify accept (file landed) store a compact
 inject 1-2 demos into the worker system prompt. Local-only; never store
 coach rewrites.
 
+EAGLE-2 rolling calibration: same traj jsonl, recent coach_verdict extras
+→ P(accept | conf_bucket, act_type). Trusted only after enough samples
+(>= 8). If P>=0.9 and the act is not git-mutate, skip verify (stay LOW;
+apply a held write only if already checked, otherwise skip the hold).
+If calibrated P and raw conf disagree for a long window, force HIGH only
+when an existing HIGH rule also matches — do not invent a new ask reason.
+Fewer than 8 verdicts: keep DSP 0.75 skip and tax <0.5.
+
 Event log (one jsonl trajectory): work / stuck+problem / asked_coach /
 coach_instruction / resumed / thought / retrieved / idle_act /
 verified_coach / coach_verdict / self_verify / demo.
@@ -41,6 +49,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
+from local_foreman.calibrate import (
+    act_type_of,
+    conf_bucket,
+    rolling_table,
+    should_skip_verify,
+)
 from local_foreman.coach import Coach, make_coach
 from local_foreman.demo import (
     DEMO_CONTEXT_HEADER,
@@ -630,8 +644,14 @@ class ForemanLoop:
             extra={"demo": stored},
         )
 
+    def _traj_entries(self, result: RunResult) -> list:
+        return self.traj.entries if self.traj is not None else result.events
+
+    def _cal_table(self, result: RunResult):
+        return rolling_table(self._traj_entries(result))
+
     def _rolling_accept_rate(self, result: RunResult) -> Optional[float]:
-        entries = self.traj.entries if self.traj is not None else result.events
+        entries = self._traj_entries(result)
         recent: list[str] = []
         for ev in entries:
             if ev.get("kind") != EVENT_COACH_VERDICT:
@@ -745,20 +765,39 @@ class ForemanLoop:
                     return State.ASK.value, fail_streak, pending, pending_reason, pending_risk
                 return State.ACT.value, fail_streak, pending, "", "none"
             self._low_p_streak = 0
+            raw_conf = resolve_confidence(action)
+            table = self._cal_table(result)
+            p_cal = table.lookup(action)
+            long_disagree = table.disagree_window(self._traj_entries(result))
             rate = self._rolling_accept_rate(result)
             if rate is not None and rate < 0.5:
-                pending_reason = "verify accept rate below 0.5; sending write to ask"
-                pending_risk = "write"
-                self._mark_stuck(
-                    result,
-                    goal,
-                    action,
-                    failed_logs,
-                    pending_reason,
-                    pending_risk,
-                    state=State.ASK.value,
-                )
-                return State.ASK.value, fail_streak, pending, pending_reason, pending_risk
+                # tax <0.5. If calibrated P and raw conf disagree for a long
+                # window, do not invent HIGH — only ask when an existing
+                # HIGH rule already matches.
+                if long_disagree:
+                    self._emit(
+                        result,
+                        EVENT_THOUGHT,
+                        (
+                            "calibrate disagree window — not inventing ask "
+                            f"(p={p_cal if p_cal is not None else 'n/a'} "
+                            f"conf={raw_conf:.2f})"
+                        ),
+                        state=State.ACT.value,
+                    )
+                else:
+                    pending_reason = "verify accept rate below 0.5; sending write to ask"
+                    pending_risk = "write"
+                    self._mark_stuck(
+                        result,
+                        goal,
+                        action,
+                        failed_logs,
+                        pending_reason,
+                        pending_risk,
+                        state=State.ASK.value,
+                    )
+                    return State.ASK.value, fail_streak, pending, pending_reason, pending_risk
             check = local_check_write(path, content)
             if check is True:
                 tr = execute(action.tool or "", action.args, root=self.root)
@@ -773,7 +812,44 @@ class ForemanLoop:
                     observation=tr.short(),
                 )
                 return State.ACT.value, 0, pending, "", "none"
+            # EAGLE-2: trusted table + high P(accept), not git-mutate → skip verify.
+            if should_skip_verify(table, action, p=p_cal):
+                extra = {
+                    "conf": raw_conf,
+                    "act": action.describe(),
+                    "conf_bucket": conf_bucket(raw_conf),
+                    "act_type": act_type_of(action),
+                    "p_accept": p_cal,
+                    "calibrate": "skip",
+                }
+                if check is False:
+                    # already checked (failed): do not apply; skip the hold.
+                    self._emit(
+                        result,
+                        EVENT_THOUGHT,
+                        (
+                            f"calibrate-skip hold (critic-fail, not apply) "
+                            f"p={p_cal:.2f}"
+                        ),
+                        state=State.ACT.value,
+                        extra=extra,
+                    )
+                    return State.ACT.value, fail_streak, pending, "", "none"
+                tr = execute(action.tool or "", action.args, root=self.root)
+                result.history.append(
+                    {"action": action.describe(), "result": tr.short()}
+                )
+                self._emit(
+                    result,
+                    EVENT_WORK,
+                    f"calibrate-skip {action.describe()} → {tr.short()}",
+                    state=State.ACT.value,
+                    observation=tr.short(),
+                    extra=extra,
+                )
+                return State.ACT.value, 0, pending, "", "none"
             # DSP: do not verify every write once accept-rate is high.
+            # Used when the calibration table is not yet trusted, or P < 0.9.
             if rate is not None and rate >= 0.75:
                 tr = execute(action.tool or "", action.args, root=self.root)
                 result.history.append(
@@ -785,7 +861,7 @@ class ForemanLoop:
                     f"dsp-skip {action.describe()} → {tr.short()}",
                     state=State.ACT.value,
                     observation=tr.short(),
-                    extra={"conf": resolve_confidence(action), "act": action.describe()},
+                    extra={"conf": raw_conf, "act": action.describe()},
                 )
                 return State.ACT.value, 0, pending, "", "none"
             self._hold_write_for_verify(action, goal)
@@ -846,6 +922,25 @@ class ForemanLoop:
                 return State.ASK.value, fail_streak, pending, pending_reason, pending_risk
             return State.ACT.value, fail_streak, pending, "", "none"
         self._low_p_streak = 0
+        table = self._cal_table(result)
+        p_cal = table.lookup(action)
+        if should_skip_verify(table, action, p=p_cal):
+            self._emit(
+                result,
+                EVENT_THOUGHT,
+                (
+                    "calibrate-skip verify after one fail "
+                    f"(p={p_cal:.2f})"
+                ),
+                state=State.ACT.value,
+                extra={
+                    "conf": resolve_confidence(action),
+                    "act": action.describe(),
+                    "p_accept": p_cal,
+                    "calibrate": "skip",
+                },
+            )
+            return State.ACT.value, fail_streak, pending, "", "none"
         self._pending_verify_action = action
         self._pending_claim = build_verify_claim(
             goal=goal,
@@ -1087,10 +1182,14 @@ class ForemanLoop:
                 if self._pending_kind == "verify":
                     result.last_instruction = reply.instruction
                     held = self._pending_verify_action
+                    held_conf = resolve_confidence(held) if held is not None else None
+                    held_act = held.describe() if held is not None else (self._pending_claim or "")
                     cal = {
-                        "conf": resolve_confidence(held) if held is not None else None,
-                        "act": held.describe() if held is not None else (self._pending_claim or ""),
+                        "conf": held_conf,
+                        "act": held_act,
                         "verdict": reply.verdict,
+                        "conf_bucket": conf_bucket(held_conf) if held_conf is not None else None,
+                        "act_type": act_type_of(held) if held is not None else act_type_of(held_act),
                     }
                     self._emit(
                         result,

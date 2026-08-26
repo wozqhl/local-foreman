@@ -1445,6 +1445,353 @@ def _smoke_demo(root: Path, errors: list[str]) -> None:
     print("demo-ok")
 
 
+
+def _smoke_calibrate(root: Path, errors: list[str]) -> None:
+    from local_foreman.calibrate import (
+        MIN_SAMPLES,
+        P_SKIP,
+        act_type_of,
+        action_is_git_mutate,
+        conf_bucket,
+        extract_verdicts,
+        rolling_table,
+        should_skip_verify,
+    )
+    from local_foreman.traj import Trajectory
+
+    if MIN_SAMPLES < 8:
+        errors.append("calibrate-ok: MIN_SAMPLES expected >= 8 got " + str(MIN_SAMPLES))
+        return
+    if P_SKIP < 0.9:
+        errors.append("calibrate-ok: P_SKIP expected >= 0.9 got " + str(P_SKIP))
+        return
+    if conf_bucket(0.39) != "low" or conf_bucket(0.4) != "mid" or conf_bucket(0.7) != "high":
+        errors.append("calibrate-ok: conf buckets " + ",".join(
+            [conf_bucket(0.39), conf_bucket(0.4), conf_bucket(0.7)]
+        ))
+        return
+    if act_type_of("write {'path': 'n.txt'}") != "write":
+        errors.append("calibrate-ok: act_type write parse failed")
+        return
+    push = WorkerAction(
+        kind="tool",
+        tool="shell",
+        args={"cmd": "git " + "push" + " origin HEAD"},
+        thought="remote",
+    )
+    if not action_is_git_mutate(push):
+        errors.append("calibrate-ok: git push not treated as git-mutate")
+        return
+    note = WorkerAction(
+        kind="tool",
+        tool="write",
+        args={"path": "note.txt", "content": "x"},
+        thought="local write",
+        confidence=0.4,
+    )
+    if action_is_git_mutate(note):
+        errors.append("calibrate-ok: ordinary write marked git-mutate")
+        return
+
+    def _seed_verdicts(path: Path, rows: list[tuple[float, str, str]]) -> None:
+        seeded = Trajectory(path, goal="calibrate seed")
+        for conf, act, verdict in rows:
+            seeded.append(
+                {
+                    "kind": "coach_verdict",
+                    "conf": conf,
+                    "act": act,
+                    "verdict": verdict,
+                    "conf_bucket": conf_bucket(conf),
+                    "act_type": act_type_of(act),
+                    "reply": {"verdict": verdict, "instruction": "seed " + verdict},
+                }
+            )
+
+    write_act = "write {'path': 'note.txt'}"
+
+    # Table-only: <8 samples is not trusted; 8 accepts is trusted P=1.0
+    thin = [
+        {"kind": "coach_verdict", "conf": 0.4, "act": write_act, "verdict": "accept",
+         "reply": {"verdict": "accept"}}
+        for _ in range(3)
+    ]
+    thin_table = rolling_table(thin)
+    if thin_table.trusted or thin_table.samples != 3:
+        errors.append("calibrate-ok: thin table trusted=" + str(thin_table.trusted))
+        return
+    if should_skip_verify(thin_table, note):
+        errors.append("calibrate-ok: skip verify before 8 samples")
+        return
+
+    fat = [
+        {"kind": "coach_verdict", "conf": 0.4, "act": write_act, "verdict": "accept",
+         "reply": {"verdict": "accept"}}
+        for _ in range(8)
+    ]
+    fat_table = rolling_table(fat)
+    if not fat_table.trusted or fat_table.samples != 8:
+        errors.append("calibrate-ok: 8 accepts not trusted")
+        return
+    p = fat_table.lookup(note)
+    if p is None or p < 0.9:
+        errors.append("calibrate-ok: expected P>=0.9 got " + str(p))
+        return
+    if not should_skip_verify(fat_table, note, p=p):
+        errors.append("calibrate-ok: trusted high P did not skip verify")
+        return
+    if should_skip_verify(fat_table, push, p=p):
+        errors.append("calibrate-ok: git-mutate must not skip verify")
+        return
+    if not extract_verdicts(fat):
+        errors.append("calibrate-ok: extract_verdicts empty")
+        return
+
+    # 1) fewer than 8: keep DSP 0.75 skip + tax <0.5 (no calibrate-skip)
+    tmp = Path(tempfile.mkdtemp(prefix="lf-cal-thin-"))
+    thin_path = tmp / "thin.jsonl"
+    _seed_verdicts(thin_path, [
+        (0.4, write_act, "accept"),
+        (0.4, write_act, "revise"),
+        (0.4, write_act, "accept"),
+    ])
+    coach = MockCoach(verify_verdicts=["accept"])
+    worker = MockWorker(script=[
+        WorkerAction(
+            kind="tool",
+            tool="write",
+            args={"path": "thin.txt", "content": "need verify"},
+            thought="thin table write",
+            confidence=0.4,
+        ),
+        WorkerAction(kind="done", thought="after thin"),
+    ])
+    res = ForemanLoop(
+        worker=worker,
+        coach=coach,
+        root=tmp,
+        max_steps=10,
+        persist=True,
+        idle=False,
+        traj_path=thin_path,
+    ).run("smoke: calibrate thin")
+    if any("calibrate-skip" in str(e.get("message") or "") for e in res.events):
+        errors.append("calibrate-ok: calibrate-skip with <8 samples")
+        return
+    if "verify" not in res.states:
+        errors.append("calibrate-ok: thin table should still verify states=" + str(res.states))
+        return
+    if "ask" in res.states:
+        errors.append("calibrate-ok: thin mixed rate invented ask")
+        return
+    if len(coach.verify_calls) != 1:
+        errors.append("calibrate-ok: thin expected 1 verify got " + str(len(coach.verify_calls)))
+        return
+
+    # DSP fallback still works when table is not trusted (3 accepts → rate 1.0)
+    tmp_dsp = Path(tempfile.mkdtemp(prefix="lf-cal-dsp-"))
+    dsp_path = tmp_dsp / "dsp.jsonl"
+    _seed_verdicts(dsp_path, [(0.4, write_act, "accept")] * 3)
+    coach_d = MockCoach(verify_verdicts=["accept"])
+    worker_d = MockWorker(script=[
+        WorkerAction(
+            kind="tool",
+            tool="write",
+            args={"path": "dsp.txt", "content": "dsp fallback"},
+            thought="dsp write",
+            confidence=0.4,
+        ),
+        WorkerAction(kind="done", thought="after dsp"),
+    ])
+    res_d = ForemanLoop(
+        worker=worker_d,
+        coach=coach_d,
+        root=tmp_dsp,
+        max_steps=8,
+        persist=True,
+        idle=False,
+        traj_path=dsp_path,
+    ).run("smoke: calibrate dsp fallback")
+    if coach_d.verify_calls or coach_d.calls:
+        errors.append("calibrate-ok: DSP fallback still called coach")
+        return
+    if not any("dsp-skip" in str(e.get("message") or "") for e in res_d.events):
+        errors.append("calibrate-ok: expected dsp-skip when table untrusted")
+        return
+    if any("calibrate-skip" in str(e.get("message") or "") for e in res_d.events):
+        errors.append("calibrate-ok: calibrate-skip stole DSP fallback")
+        return
+    if not (tmp_dsp / "dsp.txt").is_file():
+        errors.append("calibrate-ok: DSP fallback did not land file")
+        return
+
+    # 2) >=8 accepts → skip verify, stay LOW, apply (skip hold)
+    tmp2 = Path(tempfile.mkdtemp(prefix="lf-cal-ok-"))
+    ok_path = tmp2 / "ok.jsonl"
+    _seed_verdicts(ok_path, [(0.4, write_act, "accept")] * 8)
+    coach2 = MockCoach(verify_verdicts=["accept"], verdicts=["continue"])
+    worker2 = MockWorker(script=[
+        WorkerAction(
+            kind="tool",
+            tool="write",
+            args={"path": "ok.txt", "content": "calibrated"},
+            thought="trusted write",
+            confidence=0.4,
+        ),
+        WorkerAction(kind="done", thought="after calibrate skip"),
+    ])
+    res2 = ForemanLoop(
+        worker=worker2,
+        coach=coach2,
+        root=tmp2,
+        max_steps=8,
+        persist=True,
+        idle=False,
+        traj_path=ok_path,
+    ).run("smoke: calibrate skip")
+    if coach2.verify_calls or coach2.calls:
+        errors.append("calibrate-ok: trusted P still spent coach")
+        return
+    if "verify" in res2.states or "ask" in res2.states:
+        errors.append("calibrate-ok: trusted P left LOW states=" + str(res2.states))
+        return
+    if not any("calibrate-skip" in str(e.get("message") or "") for e in res2.events):
+        errors.append("calibrate-ok: missing calibrate-skip work")
+        return
+    landed = tmp2 / "ok.txt"
+    if not landed.is_file() or landed.read_text(encoding="utf-8") != "calibrated":
+        errors.append("calibrate-ok: skip-hold apply did not land file")
+        return
+    # lossless hold still: a later revise path with no table should discard
+    if any(e.get("kind") == "asked_coach" for e in res2.events):
+        errors.append("calibrate-ok: skip path counted as ask")
+        return
+
+    # 3) git-mutate still HIGH even with a trusted table
+    tmp3 = Path(tempfile.mkdtemp(prefix="lf-cal-git-"))
+    git_path = tmp3 / "git.jsonl"
+    _seed_verdicts(git_path, [(0.4, write_act, "accept")] * 8)
+    push_cmd = "git " + "push" + " origin HEAD"
+    coach3 = MockCoach(["continue"])
+    worker3 = MockWorker(script=[
+        WorkerAction(kind="tool", tool="shell", args={"cmd": push_cmd}, thought="remote"),
+        WorkerAction(kind="done", thought="after ask"),
+    ])
+    res3 = ForemanLoop(
+        worker=worker3,
+        coach=coach3,
+        root=tmp3,
+        max_steps=10,
+        persist=True,
+        idle=False,
+        traj_path=git_path,
+    ).run("smoke: calibrate git still high")
+    if "ask" not in res3.states:
+        errors.append("calibrate-ok: git-mutate skipped HIGH states=" + str(res3.states))
+        return
+    if not coach3.calls:
+        errors.append("calibrate-ok: git-mutate never asked")
+        return
+    if coach3.verify_calls:
+        errors.append("calibrate-ok: git-mutate used verify")
+        return
+
+    # 4) long disagreement: do not invent HIGH (tax would have asked)
+    tmp4 = Path(tempfile.mkdtemp(prefix="lf-cal-dis-"))
+    dis_path = tmp4 / "dis.jsonl"
+    mixed = [(0.1, write_act, "accept")] * 8 + [(0.1, write_act, "revise")] * 4
+    _seed_verdicts(dis_path, mixed)
+    loaded4 = Trajectory(dis_path)
+    table4 = rolling_table(loaded4.entries)
+    if not table4.trusted:
+        errors.append("calibrate-ok: mixed 12-row table not trusted")
+        return
+    if not table4.disagree_window(loaded4.entries):
+        errors.append("calibrate-ok: expected long disagree window")
+        return
+    coach4 = MockCoach(verify_verdicts=["revise"], verdicts=["continue"])
+    worker4 = MockWorker(script=[
+        WorkerAction(
+            kind="tool",
+            tool="write",
+            args={"path": "dis.txt", "content": "should verify not ask"},
+            thought="disagreement write",
+            confidence=0.25,
+        ),
+        WorkerAction(kind="done", thought="after disagree"),
+    ])
+    res4 = ForemanLoop(
+        worker=worker4,
+        coach=coach4,
+        root=tmp4,
+        max_steps=10,
+        persist=True,
+        idle=False,
+        traj_path=dis_path,
+    ).run("smoke: calibrate disagree")
+    if "ask" in res4.states:
+        errors.append("calibrate-ok: disagreement invented HIGH ask states=" + str(res4.states))
+        return
+    if any(
+        "accept rate below 0.5" in str(e.get("message") or "")
+        or (e.get("kind") == "stuck" and "accept rate" in str(e.get("message") or ""))
+        for e in res4.events
+    ):
+        errors.append("calibrate-ok: disagreement used tax as a new ask reason")
+        return
+    if "verify" not in res4.states:
+        errors.append("calibrate-ok: disagreement should still verify states=" + str(res4.states))
+        return
+    if not any("calibrate disagree" in str(e.get("message") or "") for e in res4.events):
+        errors.append("calibrate-ok: missing disagree-window thought")
+        return
+    if (tmp4 / "dis.txt").is_file():
+        errors.append("calibrate-ok: revise applied the held write")
+        return
+    if not any(e.get("kind") == "lesson" for e in res4.events):
+        errors.append("calibrate-ok: revise did not write a lesson")
+        return
+    # existing HIGH rule still wins
+    if any(e.get("kind") == "asked_coach" for e in res4.events):
+        errors.append("calibrate-ok: disagreement wrote asked_coach")
+        return
+
+    # tax <0.5 still works when table is untrusted (2 revises, no conf needed by DSP)
+    tmp5 = Path(tempfile.mkdtemp(prefix="lf-cal-tax-"))
+    tax_path = tmp5 / "tax.jsonl"
+    seeded5 = Trajectory(tax_path, goal="tax")
+    seeded5.append({"kind": "coach_verdict", "reply": {"verdict": "revise", "instruction": "fix 1"}})
+    seeded5.append({"kind": "coach_verdict", "reply": {"verdict": "revise", "instruction": "fix 2"}})
+    coach5 = MockCoach(["continue"])
+    worker5 = MockWorker(script=[
+        WorkerAction(
+            kind="tool",
+            tool="write",
+            args={"path": "tax.txt", "content": "taxed"},
+            thought="should go ask",
+            confidence=0.4,
+        ),
+        WorkerAction(kind="done", thought="after tax"),
+    ])
+    res5 = ForemanLoop(
+        worker=worker5,
+        coach=coach5,
+        root=tmp5,
+        max_steps=10,
+        persist=True,
+        idle=False,
+        traj_path=tax_path,
+    ).run("smoke: calibrate tax fallback")
+    if "ask" not in res5.states:
+        errors.append("calibrate-ok: untrusted tax <0.5 lost ask states=" + str(res5.states))
+        return
+    if (tmp5 / "tax.txt").is_file():
+        errors.append("calibrate-ok: taxed write landed")
+        return
+
+    print("calibrate-ok")
+
+
 def run_smoke() -> int:
     root = Path(__file__).resolve().parents[2]
     errors = []
@@ -1537,6 +1884,7 @@ def run_smoke() -> int:
     _smoke_bench(root, errors)
     _smoke_self_verify(root, errors)
     _smoke_demo(root, errors)
+    _smoke_calibrate(root, errors)
 
     if errors:
         for e in errors:

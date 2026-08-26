@@ -2,6 +2,13 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.2.7] — 2026-08-26
+
+### Added
+
+- EAGLE-2 滚动校准：同一条 traj jsonl 上用最近 `coach_verdict` 的 `(conf, act, verdict)` 估 P(accept | conf_bucket, act_type)。样本够（≥8）且 P≥0.9、又不是 git-mutate，则跳过 verify，留在 LOW（已检查才落盘，否则 skip hold）。校准与 raw conf 长期分歧时，只在原有 HIGH 四条命中才升 ask，不另造原因。样本不足仍走 DSP 0.75 skip 与 tax <0.5。
+- Smoke：`calibrate-ok`。原有 token 保留，仍只走 mock。无损暂扣、AutoMix 自核、demo 缓存、MAX_ASKS / MAX_VERIFIES 保持。不宣称三项目标已达成。
+
 ## [0.2.6] — 2026-08-26
 
 ### Added

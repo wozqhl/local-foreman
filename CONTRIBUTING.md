@@ -41,6 +41,7 @@ verify-ok
 bench-ok
 self-verify-ok
 demo-ok
+calibrate-ok
 ```
 
 请不要在 PR 里加入会触发 `mlx_lm.load` 或 `OpenAICoach.advise` 的测试。
@@ -55,6 +56,7 @@ demo-ok
 6. 空转思考不得调用教练。空转动手仍走 `act` 和四条升级。展开摘要只读本机 jsonl。轨迹只有一条 jsonl，不要再开一份平行日志。
 7. MID write 先无损暂扣，`accept` 才落盘；`verify` 不计 `asked_coach`。
 8. 发 verify/ask 前先本地自核；无望的活不要送给教练烧 token。demo 缓存只存本地 accept，不存教练改写。
+9. `coach_verdict` 校准表样本不足时不要当唯一门；git-mutate 永远不能靠校准跳过。
 
 ## 提交
 

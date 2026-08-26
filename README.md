@@ -193,6 +193,7 @@ verify-ok
 bench-ok
 self-verify-ok
 demo-ok
+calibrate-ok
 ```
 
 含义：
@@ -215,6 +216,7 @@ demo-ok
 16. `bench-ok` — mock 对照台：local asks+verifies < remote-only 调用，local 墙钟更短，夹具通过率相同
 17. `self-verify-ok` — 本地自核：高 p + CRITIC 留在 LOW；p 很低两次且非升级不打教练；真升级仍走 ask
 18. `demo-ok` — verify accept 后本地缓存 demo，相似 write 注入 worker；revise / ask / 教练改写不入库
+19. `calibrate-ok` — 同一条 traj 上滚动校准 P(accept|conf_bucket,act_type)；够样本且 P 高则跳过 verify；分歧不另造 HIGH；样本不足仍走 DSP / tax
 
 GitHub Actions（[`.github/workflows/smoke.yml`](.github/workflows/smoke.yml)）在 Ubuntu + Python 3.11 上只跑这一条 mock smoke。
 
