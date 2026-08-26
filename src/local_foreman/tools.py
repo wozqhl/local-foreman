@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import difflib
 import os
 import subprocess
 from dataclasses import dataclass
@@ -166,3 +168,69 @@ def execute(tool: str, args: dict, *, root: Optional[Path] = None) -> ToolResult
     if tool == "shell":
         return run_command(str(args.get("cmd") or args.get("command") or ""), root=root)
     return ToolResult(ok=False, output=f"unknown tool: {tool}")
+
+
+def draft_excerpt(path: str, content: str, *, limit: int = 240, root: Optional[Path] = None) -> str:
+    """Back-compat wrapper. Prefer draft_diff for verify tickets."""
+    return draft_diff(path, content, root=root, limit=limit)
+
+
+def is_git_ro(cmd: str) -> bool:
+    sub = _git_sub(cmd)
+    return sub in GIT_RO
+
+
+def is_readonly_speculate(tool: str, args: dict) -> bool:
+    """Speculative Actions Assumption 2: only read / git-ro. Never a write."""
+    if tool == "read":
+        return True
+    if tool == "shell":
+        cmd = str(args.get("cmd") or args.get("command") or "")
+        return is_git_ro(cmd)
+    return False
+
+
+def local_check_write(path: str, content: str) -> Optional[bool]:
+    """CRITIC-style local check. True=pass (skip verify), False=fail, None=no check."""
+    name = str(path or "")
+    if name.endswith(".py"):
+        try:
+            ast.parse(str(content or ""))
+            return True
+        except SyntaxError:
+            return False
+    return None
+
+
+def draft_diff(path: str, new_content: str, *, root: Optional[Path] = None, limit: int = 480) -> str:
+    """Aider-style editor diff: path + truncated unified-diff (or excerpt)."""
+    path = str(path or "").strip()
+    new_text = str(new_content or "")
+    old_text = ""
+    try:
+        pth = Path(path)
+        if not pth.is_absolute() and root is not None:
+            pth = root / pth
+        if pth.is_file():
+            old_text = pth.read_text(encoding="utf-8")
+    except OSError:
+        old_text = ""
+    label = path or "draft"
+    if old_text == new_text:
+        body = f"{label}: (no change)"
+    elif old_text or new_text:
+        diff = list(
+            difflib.unified_diff(
+                old_text.splitlines(),
+                new_text.splitlines(),
+                fromfile="a/" + label,
+                tofile="b/" + label,
+                lineterm="",
+            )
+        )
+        body = "\n".join(diff) if diff else f"{label}: {new_text[:200]}"
+    else:
+        body = label
+    if len(body) > limit:
+        body = body[: limit - 3] + "..."
+    return body

@@ -1,16 +1,26 @@
-"""Main loop: act -> (escalate) ask -> apply -> act.
+"""Main loop: act -> (low | verify | ask) -> apply -> act.
+
+Three risk lanes after each WorkerAction. Router is tool-kind first
+(FrugalGPT / RouteLLM cascade), not raw worker confidence:
+  LOW  — read / git-ro / idle thought: stay in act (0 coach tokens).
+  MID  — write (held losslessly): state=verify, aider-style draft ticket.
+  HIGH — git-mutate / remote / unsure / two fails / user review: state=ask.
+
+While waiting for verify or ask, local may only pre-run read / git-ro.
+Never speculate a write (Speculative Actions Assumption 2).
+Pending write is applied only on coach accept; revise/halt discards it.
 
 Event log (one jsonl trajectory): work / stuck+problem / asked_coach /
-coach_instruction / resumed / thought / retrieved / idle_act.
-Idle local think is extra: never calls the coach. It may pick a tiny
-local tool and still go through act + the four escalate rules.
-Compacted summaries can be expanded back to raw jsonl for worker context.
-After apply, the worker MUST continue with the coach instruction in its
-system prompt.
-Coach usage is tallied from asked_coach / coach_instruction on this same
-jsonl. Idle thought / idle_act / retrieved do not increment the counter.
-LOCAL_FOREMAN_MAX_ASKS hard-caps asked_coach (unset = no cap). When the next
-ask would exceed the cap, skip coach, stay local (idle or halt).
+coach_instruction / resumed / thought / retrieved / idle_act /
+verified_coach / coach_verdict.
+Idle local think is extra: never calls the coach. Idle-act still honors
+the four HIGH rules; MID verify is skipped so idle never spends on verify.
+After ask-apply, the worker MUST continue with the coach instruction.
+Verify accept executes a held write; the coach does not rewrite the file.
+asked_coach / coach_instruction tally HIGH asks. verified_coach /
+coach_verdict tally MID verifies and are NOT counted as asks.
+LOCAL_FOREMAN_MAX_ASKS hard-caps asked_coach (unset = no cap).
+LOCAL_FOREMAN_MAX_VERIFIES hard-caps verified_coach (unset = no cap).
 """
 
 from __future__ import annotations
@@ -29,17 +39,33 @@ from local_foreman.state import (
     ESCALATE_USER_REVIEW,
     State,
 )
-from local_foreman.ticket import Ticket, build_problem, validate_ticket
-from local_foreman.tools import execute, needs_ask
+from local_foreman.ticket import (
+    Ticket,
+    VerifyTicket,
+    build_problem,
+    build_verify_claim,
+    validate_ticket,
+    validate_verify_ticket,
+)
+from local_foreman.tools import (
+    draft_diff,
+    execute,
+    is_readonly_speculate,
+    local_check_write,
+    needs_ask,
+)
 from local_foreman.traj import (
     DEFAULT_RECENT,
     EVENT_ASKED_COACH,
     EVENT_COACH_INSTRUCTION,
+    EVENT_COACH_VERDICT,
     EVENT_IDLE_ACT,
     EVENT_RETRIEVED,
     EVENT_RESUMED,
     EVENT_STUCK,
     EVENT_THOUGHT,
+    EVENT_LESSON,
+    EVENT_VERIFIED_COACH,
     EVENT_WORK,
     Trajectory,
     compact_entries,
@@ -48,9 +74,15 @@ from local_foreman.traj import (
     retrieve,
     utc_now,
     coach_max_asks,
+    coach_max_verifies,
     coach_stats,
 )
-from local_foreman.worker import WORKER_SYSTEM, Worker, WorkerAction, make_worker
+from local_foreman.worker import (
+    WORKER_SYSTEM,
+    Worker,
+    WorkerAction,
+    make_worker,
+)
 
 
 REVIEW_HINTS = ("review", "please review", "ask coach", "look this over")
@@ -63,9 +95,12 @@ ENV_PERSIST = "LOCAL_FOREMAN_PERSIST"
 ENV_IDLE_START = "LOCAL_FOREMAN_IDLE_START"
 ENV_IDLE_CAP = "LOCAL_FOREMAN_IDLE_CAP"
 ENV_MAX_ASKS = "LOCAL_FOREMAN_MAX_ASKS"
+ENV_MAX_VERIFIES = "LOCAL_FOREMAN_MAX_VERIFIES"
+ENV_VERIFY_BELOW = "LOCAL_FOREMAN_VERIFY_BELOW"
 
 DEFAULT_IDLE_START = 5.0
 DEFAULT_IDLE_CAP = 300.0
+DEFAULT_VERIFY_BELOW = 0.55
 
 
 def env_flag(name: str, default: bool = False) -> bool:
@@ -96,6 +131,9 @@ class RunResult:
     last_instruction: str = ""
     last_problem: str = ""
     tickets: int = 0
+    verifies: int = 0
+    verify_verdicts: list[str] = field(default_factory=list)
+    last_claim: str = ""
     thoughts: list[str] = field(default_factory=list)
     idle_intervals: list[float] = field(default_factory=list)
     traj_path: str = ""
@@ -121,6 +159,8 @@ class ForemanLoop:
         idle_max: Optional[int] = None,
         sleeper: Optional[Callable[[float], None]] = None,
         max_asks: Optional[int] = None,
+        max_verifies: Optional[int] = None,
+        verify_below: Optional[float] = None,
     ):
         self.worker = worker or make_worker()
         self.coach = coach or make_coach()
@@ -150,6 +190,14 @@ class ForemanLoop:
             self.max_asks = coach_max_asks()
         else:
             self.max_asks = None if int(max_asks) < 0 else int(max_asks)
+        if max_verifies is None:
+            self.max_verifies = coach_max_verifies()
+        else:
+            self.max_verifies = None if int(max_verifies) < 0 else int(max_verifies)
+        if verify_below is None:
+            self.verify_below = env_float(ENV_VERIFY_BELOW, DEFAULT_VERIFY_BELOW)
+        else:
+            self.verify_below = float(verify_below)
         self._sleep = sleeper or time.sleep
         self.traj: Optional[Trajectory] = None
         self._idle_interval = self.idle_start
@@ -158,6 +206,11 @@ class ForemanLoop:
         self._seq = 0
         self._retrieved_span: Optional[tuple[int, int]] = None
         self._retrieved_entries: list[dict] = []
+        self._pending_kind = ""
+        self._pending_verify_action: Optional[WorkerAction] = None
+        self._pending_claim = ""
+        self._pending_draft = ""
+        self._pending_verify_risk = "none"
 
     def _reset_backoff(self) -> None:
         self._idle_interval = self.idle_start
@@ -359,6 +412,128 @@ class ForemanLoop:
             f"max_asks: {ENV_MAX_ASKS}={self.max_asks} already used {used}"
         )
 
+    def _coach_verify_count(self, result: RunResult) -> int:
+        entries = self.traj.entries if self.traj is not None else result.events
+        return int(coach_stats(entries).get("verifies") or 0)
+
+    def _skip_verify_for_cap(self, result: RunResult) -> Optional[str]:
+        """If the next verified_coach would exceed the cap, stay local."""
+        if self.max_verifies is None:
+            return None
+        used = self._coach_verify_count(result)
+        if used + 1 <= self.max_verifies:
+            return None
+        return (
+            f"max_verifies: {ENV_MAX_VERIFIES}={self.max_verifies} already used {used}"
+        )
+
+    def _verify_ticket(self, goal: str) -> VerifyTicket:
+        risk = self._pending_verify_risk
+        if risk not in {"write", "none"}:
+            risk = "write" if risk else "none"
+        return validate_verify_ticket(
+            VerifyTicket(
+                goal=goal,
+                claim=self._pending_claim
+                or build_verify_claim(goal=goal, what="a local draft"),
+                draft=self._pending_draft,
+                risk=risk,  # type: ignore[arg-type]
+            )
+        )
+
+    def _discard_held_write(self) -> None:
+        """Lossless hold: revise/halt drop the draft. Never apply it."""
+        self._pending_verify_action = None
+        self._pending_claim = ""
+        self._pending_draft = ""
+        self._pending_verify_risk = "none"
+
+    def _hold_write_for_verify(self, action: WorkerAction, goal: str) -> None:
+        path = str((action.args or {}).get("path") or "")
+        content = str((action.args or {}).get("content") or "")
+        self._pending_verify_action = action
+        self._pending_claim = build_verify_claim(
+            goal=goal,
+            what=f"will write {path or 'a file'} (draft held until accept)",
+        )
+        self._pending_draft = draft_diff(path, content, root=self.root)
+        self._pending_verify_risk = "write"
+
+    def _apply_held_write(self, result: RunResult) -> None:
+        held = self._pending_verify_action
+        self._pending_verify_action = None
+        if held is None or held.kind != "tool" or (held.tool or "") != "write":
+            return
+        ask, _reason, _risk = needs_ask(held.tool or "", held.args)
+        if ask:
+            return
+        tr = execute(held.tool or "", held.args, root=self.root)
+        result.history.append({"action": held.describe(), "result": tr.short()})
+        self._emit(
+            result,
+            EVENT_WORK,
+            f"{held.describe()} → {tr.short()}",
+            state=State.ACT.value,
+            observation=tr.short(),
+        )
+
+    def _speculate_readonly(
+        self,
+        result: RunResult,
+        action: Optional[WorkerAction],
+        *,
+        waiting: str,
+    ) -> None:
+        """While waiting for verify/ask: only read / git-ro. Never a write."""
+        if action is None or action.kind != "tool":
+            return
+        tool = action.tool or ""
+        args = action.args or {}
+        if not is_readonly_speculate(tool, args):
+            return
+        tr = execute(tool, args, root=self.root)
+        result.history.append(
+            {"action": f"speculate {action.describe()}", "result": tr.short()}
+        )
+        self._emit(
+            result,
+            EVENT_WORK,
+            f"speculative {action.describe()} ({waiting}) → {tr.short()}",
+            state=waiting,
+            observation=tr.short(),
+        )
+
+    def _emit_lesson(self, result: RunResult, instruction: str, *, about: str = "") -> None:
+        """Reflexion: one-line lesson on the same traj retrieve can pick up."""
+        text = "lesson: " + ((about + ": ") if about else "")
+        text += " ".join(str(instruction).split())
+        if len(text) > 240:
+            text = text[:237] + "..."
+        self._emit(
+            result,
+            EVENT_LESSON,
+            text,
+            instruction=instruction,
+            state=State.ACT.value,
+        )
+
+    def _rolling_accept_rate(self, result: RunResult) -> Optional[float]:
+        entries = self.traj.entries if self.traj is not None else result.events
+        recent: list[str] = []
+        for ev in entries:
+            if ev.get("kind") != EVENT_COACH_VERDICT:
+                continue
+            reply = ev.get("reply")
+            if isinstance(reply, dict) and reply.get("verdict"):
+                recent.append(str(reply["verdict"]))
+        if not recent:
+            recent = [v for v in result.verify_verdicts if v]
+        recent = recent[-4:]
+        if len(recent) < 2:
+            return None
+        accepts = sum(1 for v in recent if v == "accept")
+        return accepts / len(recent)
+
     def _handle_act(
         self,
         result: RunResult,
@@ -366,6 +541,8 @@ class ForemanLoop:
         action: WorkerAction,
         failed_logs: list[str],
         fail_streak: int,
+        *,
+        from_idle: bool = False,
     ) -> tuple[str, int, Optional[WorkerAction], str, str]:
         """Process one act action. Returns (next_state, fail_streak, pending, reason, risk)."""
         pending = action
@@ -417,6 +594,47 @@ class ForemanLoop:
                 state=State.ASK.value,
             )
             return State.ASK.value, fail_streak, pending, pending_reason, pending_risk
+        is_write = action.kind == "tool" and (action.tool or "") == "write"
+        # Router: tool kind first (read=local, write=verify). Not raw confidence.
+        if is_write and not from_idle:
+            path = str((action.args or {}).get("path") or "")
+            content = str((action.args or {}).get("content") or "")
+            rate = self._rolling_accept_rate(result)
+            if rate is not None and rate < 0.5:
+                pending_reason = "verify accept rate below 0.5; sending write to ask"
+                pending_risk = "write"
+                self._mark_stuck(
+                    result,
+                    goal,
+                    action,
+                    failed_logs,
+                    pending_reason,
+                    pending_risk,
+                    state=State.ASK.value,
+                )
+                return State.ASK.value, fail_streak, pending, pending_reason, pending_risk
+            check = local_check_write(path, content)
+            if check is True:
+                tr = execute(action.tool or "", action.args, root=self.root)
+                result.history.append(
+                    {"action": action.describe(), "result": tr.short()}
+                )
+                self._emit(
+                    result,
+                    EVENT_WORK,
+                    f"critic-ok {action.describe()} → {tr.short()}",
+                    state=State.ACT.value,
+                    observation=tr.short(),
+                )
+                return State.ACT.value, 0, pending, "", "none"
+            self._hold_write_for_verify(action, goal)
+            self._emit(
+                result,
+                EVENT_WORK,
+                f"held write {path} for verify",
+                state=State.VERIFY.value,
+            )
+            return State.VERIFY.value, 0, pending, "verify_write", "write"
         tr = execute(action.tool or "", action.args, root=self.root)
         result.history.append(
             {"action": action.describe(), "result": tr.short()}
@@ -445,7 +663,18 @@ class ForemanLoop:
                 state=State.ASK.value,
             )
             return State.ASK.value, fail_streak, pending, pending_reason, pending_risk
-        return State.ACT.value, fail_streak, pending, "", "none"
+        # MID: one failure, not yet twice. Idle skips verify.
+        if from_idle:
+            return State.ACT.value, fail_streak, pending, "", "none"
+        self._pending_verify_action = action
+        self._pending_claim = build_verify_claim(
+            goal=goal,
+            what=f"{action.tool or action.kind} failed once",
+            reason=tr.short(),
+        )
+        self._pending_draft = tr.short()
+        self._pending_verify_risk = "write" if tr.risk == "write" else "none"
+        return State.VERIFY.value, fail_streak, pending, "verify_fail_once", self._pending_verify_risk
 
     def _idle_think(self, result: RunResult, goal: str) -> Optional[WorkerAction]:
         """Local monologue. Never calls the coach. May return a tool to send through act."""
@@ -500,6 +729,11 @@ class ForemanLoop:
         self._carry_action = None
         self._retrieved_span = None
         self._retrieved_entries = []
+        self._pending_kind = ""
+        self._pending_verify_action = None
+        self._pending_claim = ""
+        self._pending_draft = ""
+        self._pending_verify_risk = "none"
         state = State.ACT
         fail_streak = 0
         failed_logs: list[str] = []
@@ -533,9 +767,11 @@ class ForemanLoop:
 
             if state == State.ACT:
                 self._maybe_retrieve(result)
+                from_idle = False
                 if self._carry_action is not None:
                     action = self._carry_action
                     self._carry_action = None
+                    from_idle = True
                 else:
                     action = self.worker.step(
                         goal=goal,
@@ -545,11 +781,65 @@ class ForemanLoop:
                         else result.history,
                     )
                 nxt, fail_streak, pending_action, pending_reason, pending_risk = self._handle_act(
-                    result, goal, action, failed_logs, fail_streak
+                    result, goal, action, failed_logs, fail_streak, from_idle=from_idle
                 )
                 if not nxt:
                     break
                 state = State(nxt)
+                continue
+
+            if state == State.VERIFY:
+                cap_reason = self._skip_verify_for_cap(result)
+                if cap_reason is not None:
+                    used = self._coach_verify_count(result)
+                    cap = self.max_verifies
+                    self._emit(
+                        result,
+                        EVENT_THOUGHT,
+                        f"达到核对上限（已用 {used}/{cap}），不核对，留在本地",
+                        state=State.IDLE.value if self.idle else State.ACT.value,
+                    )
+                    self._apply_held_write(result)
+                    self._pending_claim = ""
+                    self._pending_draft = ""
+                    if self.idle:
+                        state = State.IDLE
+                        continue
+                    state = State.ACT
+                    continue
+                ticket = self._verify_ticket(goal)
+                result.last_claim = ticket.claim
+                held = self._pending_verify_action
+                if held and (held.tool or "") == "write":
+                    path = str((held.args or {}).get("path") or "")
+                    if path:
+                        self._speculate_readonly(
+                            result,
+                            WorkerAction(
+                                kind="tool",
+                                tool="read",
+                                args={"path": path},
+                                thought="speculative read while verify waits",
+                            ),
+                            waiting=State.VERIFY.value,
+                        )
+                self._emit(
+                    result,
+                    EVENT_VERIFIED_COACH,
+                    "核对中",
+                    state=state.value,
+                    ticket=ticket.to_dict(),
+                )
+                reply = self.coach.verify(ticket)
+                result.verifies += 1
+                result.verify_verdicts.append(reply.verdict)
+                result.history.append(
+                    {"verify": ticket.to_dict(), "reply": reply.to_dict()}
+                )
+                result.last_instruction = reply.instruction
+                self._pending_reply = reply
+                self._pending_kind = "verify"
+                state = State.APPLY
                 continue
 
             if state == State.ASK:
@@ -575,6 +865,16 @@ class ForemanLoop:
                     goal, action, failed_logs, pending_reason, pending_risk
                 )
                 self._reset_backoff()
+                self._speculate_readonly(
+                    result,
+                    WorkerAction(
+                        kind="tool",
+                        tool="shell",
+                        args={"cmd": "git status --porcelain"},
+                        thought="speculative git-ro while ask waits",
+                    ),
+                    waiting=State.ASK.value,
+                )
                 self._emit(
                     result,
                     EVENT_ASKED_COACH,
@@ -592,6 +892,7 @@ class ForemanLoop:
                 result.last_instruction = reply.instruction
                 result.last_problem = ticket.problem
                 self._pending_reply = reply
+                self._pending_kind = "ask"
                 state = State.APPLY
                 continue
 
@@ -600,7 +901,49 @@ class ForemanLoop:
                 if reply is None:
                     result.done_reason = "apply-missing-reply"
                     break
-                # Local MUST inject instruction into the next worker system prompt.
+                if self._pending_kind == "verify":
+                    result.last_instruction = reply.instruction
+                    self._emit(
+                        result,
+                        EVENT_COACH_VERDICT,
+                        reply.instruction,
+                        instruction=reply.instruction,
+                        state=state.value,
+                        reply=reply.to_dict(),
+                    )
+                    if reply.verdict == "halt":
+                        self._discard_held_write()
+                        result.done_reason = "halt: " + reply.instruction
+                        break
+                    if reply.verdict == "accept":
+                        self._apply_held_write(result)
+                        self._pending_kind = ""
+                        self._pending_claim = ""
+                        self._pending_draft = ""
+                        fail_streak = 0
+                        pending_action = None
+                        state = State.ACT
+                        continue
+                    # revise: discard the draft (lossless hold), inject lesson
+                    self.coach_instruction = reply.instruction
+                    about = ""
+                    if self._pending_verify_action is not None:
+                        about = str((self._pending_verify_action.args or {}).get("path") or "draft")
+                    self._discard_held_write()
+                    self._emit_lesson(result, reply.instruction, about=about)
+                    self._emit(
+                        result,
+                        EVENT_RESUMED,
+                        "继续：按核对意见回到干活",
+                        instruction=reply.instruction,
+                        state=State.ACT.value,
+                    )
+                    self._pending_kind = ""
+                    fail_streak = 0
+                    pending_action = None
+                    state = State.ACT
+                    continue
+                # HIGH ask apply. Local MUST inject instruction.
                 self.coach_instruction = reply.instruction
                 result.last_instruction = reply.instruction
                 self._emit(
@@ -615,6 +958,8 @@ class ForemanLoop:
                 if reply.verdict == "halt":
                     result.done_reason = "halt: " + reply.instruction
                     break
+                if reply.verdict == "revise":
+                    self._emit_lesson(result, reply.instruction, about="ask")
                 # continue / revise: back to act with instruction in system prompt.
                 # Never auto-run a blocked remote.
                 self._emit(
@@ -628,6 +973,7 @@ class ForemanLoop:
                 fail_streak = 0
                 pending_action = None
                 self._pending_problem = ""
+                self._pending_kind = ""
                 state = State.ACT
                 continue
 

@@ -1,15 +1,27 @@
 # Local Foreman
 
-Mac 优先的本地 Agent：**本地小模型做全部工作**，远端大模型只当教练（引导 / 纠正），不亲手改仓库。
+要同时做到三件事（**尚未用数字证明**）：
 
-完整闭环：**本地模型干活 → 遇到问题，把当前问题表述清楚 → 询问大模型 → 大模型给出相关指示 → 本地模型带着指示继续干活。**
+1. 比「只用远端大模型」更快
+2. 质量与「只用远端大模型」相当
+3. token / 教练调用显著更少
 
-本仓库是独立开源项目，**不是 Cursor、Grok Bot 或任何托管编程 Agent 的克隆**。协议是自己的 `act` → `ask` → `apply`，见 [protocol.md](protocol.md)。
+做法是三条风险车道，而不是每一步都问大模型（见 [protocol.md](protocol.md)）：
+
+| 车道 | 何时 | 教练 |
+| --- | --- | --- |
+| LOW | 读文件、只读 git、空转 | 不问（0 token） |
+| MID | 本地拟好的 write（无损暂扣，accept 才落盘） | `verify` 短票，看板写**核对中**，不是求助 |
+| HIGH | 原四条升级（连败两次 / git·remote / review / unsure） | `ask` |
+
+当前 `act` / `verify` / `ask` / `apply` 在 chase 这三项目标。mock 对照台 `python -m local_foreman bench` 用夹具通过率当质量、用 asks+verifies 当 token 代理。**没有真实模型分数之前，不宣称已达成。**
+
+本仓库是独立开源项目，**不是 Cursor、Grok Bot 或任何托管编程 Agent 的克隆**。
 
 - 作者：Shaffer Wang
 - 许可：[Apache-2.0](LICENSE)（与 Qwen / MLX 生态兼容；不主张第三方商标，见 [NOTICE](NOTICE)）
-- 协议状态：`act` | `ask` | `apply`（`idle` 是附加的本地空转，不问教练）
-- 本机看板：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想 / 展开原文 / 空转动手
+- 协议状态：`act` | `verify` | `ask` | `apply`（`idle` 是附加的本地空转，不问教练）
+- 本机看板：干活中 / 核对中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想 / 展开原文 / 空转动手
 
 ## 是什么
 
@@ -19,9 +31,9 @@ Mac 优先的本地 Agent：**本地小模型做全部工作**，远端大模型
 | Local loop | 本仓库 | 决定何时升级；拦住 `git push` / 远端写入；把问题写成一句 `problem` |
 | Coach | 任意 OpenAI 兼容 HTTP API，或 mock | 只回一张短 JSON：`continue` / `revise` / `halt` + `instruction` |
 
-循环：`act` →（升级条件）→ `ask` → `apply` → `act`。`apply` **必须**把教练的 `instruction` 注入下一轮 Worker system prompt。`halt` 结束进程并返回非 0。
+循环：`act` →（low 留下 / verify / ask）→ `apply` → `act`。HIGH 的 `apply` **必须**把教练的 `instruction` 注入下一轮 Worker system prompt。`halt` 结束进程并返回非 0。MID 的 write 在 `accept` 前不落盘。
 
-升级只发生在：同一工具连败两次、即将 mutate git / 写 remote、用户要求 review、Worker 发出 `unsure`。
+HIGH 升级只发生在：同一工具连败两次、即将 mutate git / 写 remote、用户要求 review、Worker 发出 `unsure`。
 
 发给教练的不是仓库 dump，而是一句说清楚的问题：失败了什么、试过什么、现在需要什么。事件日志是一条轨迹：`work` → `stuck`（带问题）→ `asked_coach` → `coach_instruction` → `resumed`，空转再追加 `thought`，需要时还有 `retrieved` / `idle_act`。看板 SSE 和磁盘 jsonl 共用这一条，不另起一份日志。
 
@@ -93,6 +105,10 @@ local-foreman --persist "把 README 读一遍并总结"
 轨迹只有一条 jsonl。人眼查看用同一个文件，不另起格式：
 
 ```bash
+python -m local_foreman bench
+# 或
+python -m local_foreman --bench
+
 local-foreman traj
 python -m local_foreman traj --last 20
 local-foreman traj --kind thought,idle_act,retrieved --last 10
@@ -142,6 +158,7 @@ python3 -m pip install -e '.[mlx]'
 | `LOCAL_FOREMAN_IDLE_CAP` | 秒 | 空转间隔上限，默认 `300` |
 | `COACH_USD_PER_ASK` | 美元/次 | 可选。设置后 `traj --stats` 与看板才估算费用；未设置只计次数 |
 | `LOCAL_FOREMAN_MAX_ASKS` | 整数 | 可选。教练询问硬上限。再问一次会超过则跳过 ask，留在本地（空转或 halt），不调用教练。未设置不设上限 |
+| `LOCAL_FOREMAN_MAX_VERIFIES` | 整数 | 可选。核对硬上限。再核一次会超过则跳过 verify，留在本地。未设置不设上限 |
 
 CLI 的 `--worker` / `--coach` 会覆盖对应环境变量。`--smoke` 会强制两边都是 mock。
 
@@ -170,6 +187,8 @@ idle-act-ok
 traj-cli-ok
 ask-cost-ok
 max-ask-ok
+verify-ok
+bench-ok
 ```
 
 含义：
@@ -188,6 +207,8 @@ max-ask-ok
 12. `traj-cli-ok` — `traj --last` 读同一条 jsonl，能打印 `thought` / `idle_act` / `retrieved`
 13. `ask-cost-ok` — mock ask/apply 后 `asks>=1`；仅空转的 persist 片段 `asks` 仍为 0
 14. `max-ask-ok` — `LOCAL_FOREMAN_MAX_ASKS=1` 时第一次 ask 会打教练，第二次升级跳过，不调用教练
+15. `verify-ok` — 本地 write 走 `verify` → `accept` 才落盘，不走 `ask`；revise 丢弃草稿
+16. `bench-ok` — mock 对照台：local asks+verifies < remote-only 调用，local 墙钟更短，夹具通过率相同
 
 GitHub Actions（[`.github/workflows/smoke.yml`](.github/workflows/smoke.yml)）在 Ubuntu + Python 3.11 上只跑这一条 mock smoke。
 

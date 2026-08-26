@@ -2,6 +2,17 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.2.5] — 2026-08-26
+
+### Added
+
+- 三条风险车道：LOW 留下 / MID `verify`（无损暂扣 write） / HIGH 原四条 `ask`。路由按工具种类，不以 raw confidence 为唯一门。
+- Verify 票是 aider 风格的 path + 截断 unified-diff，不是 stuck 问题票。看板「核对中」，不计入 `asked_coach`。
+- 等待核对/询问时只允许预跑 read / git-ro，绝不投机写。
+- CRITIC：本地 `.py` 干跑通过则跳过 verify。滚动 accept 率 < 0.5 时下一笔 write 升到 ask。revise 写一行 `lesson`。
+- mock 对照台 `python -m local_foreman bench`：墙钟 / asks+verifies / 夹具通过率。不宣称三项目标已达成。
+- Smoke：`verify-ok`、`bench-ok`。原有 token 保留，仍只走 mock。
+
 ## [0.2.4] — 2026-08-26
 
 ### Added

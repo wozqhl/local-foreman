@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Optional, Protocol
 
 WORKER_SYSTEM = """You are the local worker. You do the work. The coach only guides.
@@ -32,11 +32,36 @@ class WorkerAction:
     tool: Optional[str] = None
     args: dict[str, Any] = field(default_factory=dict)
     thought: str = ""
+    confidence: Optional[float] = None
 
     def describe(self) -> str:
         if self.kind == "tool":
             return f"{self.tool} {self.args}"
         return f"{self.kind}: {self.thought}"
+
+
+def resolve_confidence(action: WorkerAction) -> float:
+    """Missing confidence: 1.0 for read / other, 0.4 for write (MID verify)."""
+    if action.confidence is not None:
+        try:
+            return min(1.0, max(0.0, float(action.confidence)))
+        except (TypeError, ValueError):
+            pass
+    if action.kind == "tool" and (action.tool or "") == "write":
+        return 0.4
+    return 1.0
+
+
+def with_resolved_confidence(action: WorkerAction) -> WorkerAction:
+    if action.confidence is not None:
+        try:
+            c = min(1.0, max(0.0, float(action.confidence)))
+            if c == action.confidence:
+                return action
+            return replace(action, confidence=c)
+        except (TypeError, ValueError):
+            pass
+    return replace(action, confidence=resolve_confidence(action))
 
 
 class Worker(Protocol):
@@ -72,11 +97,19 @@ def parse_action(raw: str) -> WorkerAction:
     kind = str(data.get("kind") or "unsure")
     if kind not in ACTION_KINDS:
         kind = "unsure"
+    raw_c = data.get("confidence")
+    conf = None
+    if raw_c is not None and raw_c != "":
+        try:
+            conf = min(1.0, max(0.0, float(raw_c)))
+        except (TypeError, ValueError):
+            conf = None
     return WorkerAction(
         kind=kind,
         tool=data.get("tool"),
         args=dict(data.get("args") or {}),
         thought=str(data.get("thought") or ""),
+        confidence=conf,
     )
 
 
@@ -99,16 +132,17 @@ class MockWorker:
         self.last_system = system
         if self.script:
             idx = min(self.calls - 1, len(self.script) - 1)
-            return self.script[idx]
+            return with_resolved_confidence(self.script[idx])
         g = goal.lower()
         if "unsure" in g and self.calls == 1:
-            return WorkerAction(kind="unsure", thought="local emits unsure")
+            return WorkerAction(kind="unsure", thought="local emits unsure", confidence=0.0)
         if ("push" in g or "remote" in g) and self.calls == 1:
             return WorkerAction(
                 kind="tool",
                 tool="shell",
                 args={"cmd": "git push origin HEAD"},
                 thought="fake remote update for ask path",
+                confidence=0.2,
             )
         if self.calls == 1:
             return WorkerAction(
@@ -116,8 +150,9 @@ class MockWorker:
                 tool="read",
                 args={"path": "README.md"},
                 thought="safe read",
+                confidence=1.0,
             )
-        return WorkerAction(kind="done", thought="goal complete")
+        return WorkerAction(kind="done", thought="goal complete", confidence=1.0)
 
     def think(self, *, goal: str, system: str, history: list[dict]) -> WorkerAction:
         self.think_calls += 1

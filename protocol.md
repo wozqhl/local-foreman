@@ -1,34 +1,62 @@
-# act / ask / apply
+# act / verify / ask / apply
 
-Local 干活。遇到问题先把问题说清楚，再问 Coach。Coach 只出短指令。Ticket 不带整仓 dump。
+产品要同时追三件事（**尚未用数字证明已达成**）：比只用远端大模型更快、质量相当、token 显著更少。做法是三条风险车道，而不是每一步都问大模型。
 
-闭环：本地模型干活 → 说清当前问题 → 询问大模型 → 大模型给出指示 → 本地模型带着指示继续干活。
+闭环：本地干活 → 按车道留下 / 核对草稿 / 说清问题再问 → 按指示继续。空转永远不问教练。
 
-空转思考是附加的：没人催、也没升级条件时，本地模型自己想一句，写进同一条轨迹。**空转永远不问教练。**
+## 三条车道（先路由，再级联）
+
+路由按 **工具种类**，不是只看 worker 的 raw confidence（FrugalGPT / RouteLLM 式 cascade）：
+
+| 车道 | 何时 | 教练 | 状态 |
+| --- | --- | --- | --- |
+| LOW | `read`、git 只读、空转想法 | 不问（0 token） | 留在 `act` |
+| MID | 本地拟好的 `write`（非 `.git`） | `verify` 短票，教练不重写文件 | `verify` |
+| HIGH | 原四条：同工具连败两次、即将 mutate git / remote / `git push`、用户 review、Worker `unsure` | `ask`（stuck ticket） | `ask` |
+
+级联：一次失败可进核对；核对 accept 率滚动低于 0.5 时，下一笔 write 升到 `ask`（speculation tax）。有本地检查且通过（CRITIC：例如 `.py` 干跑 `ast.parse`）则跳过 verify，直接落盘。
+
+`git push` / remote write **必须**先 `ask`，禁止在 `act` 里直接执行。空转本身不问教练；空转动手仍走 `act` + HIGH 四条，MID verify 会跳过。
+
+## 无损暂扣（lossless hold）
+
+待写入的 draft **在教练 `accept` 之前不得落盘**。`revise` / `halt` **丢弃**草稿。这是 speculative decoding / Speculative Actions 在动作层：本地先起草，教练只验收。
+
+等待 `verify` 或 `ask` 时，本地只允许预跑 `read` / git 只读。**禁止**投机写文件（Speculative Actions Assumption 2）。
 
 ## 状态
 
 | 状态 | 谁 | 做什么 |
 | --- | --- | --- |
 | `act` | Worker（本地 Qwen3-8B / mock） | 选一个 tool 或 `done` / `unsure` |
-| `ask` | Local → Coach | 只发一张带 `problem` 的 Ticket |
-| `apply` | Local | 把 Coach 的 `instruction` 注入下一轮 Worker system prompt，再按 verdict 走 |
-| `idle` | Worker（本地） | 附加状态。短 `thought`，指数退避。可挑一个本地小动作再进 `act`。空转本身不打教练 |
+| `verify` | Local → Coach | 发 aider 风格的 draft 票，不是 stuck 问题票。看板：**核对中**（不得写成求助中） |
+| `ask` | Local → Coach | 只发一张带 `problem` 的 Ticket。看板：求助中（正在咨询大模型） |
+| `apply` | Local | 按 verdict 走：ask 的 continue/revise/halt；verify 的 accept/revise/halt |
+| `idle` | Worker（本地） | 附加状态。短 `thought`，指数退避。空转本身不打教练 |
 
-循环：`act` →（升级条件）→ `ask` → `apply` → `act`。`halt` 在 `apply` 结束。`idle` 不进入这条闭环。
+循环：`act` →（low 留下 \| verify \| ask）→ `apply` → `act`。`halt` 在 `apply` 结束。`idle` 不进入这条闭环。
 
-事件日志（一条 append-only jsonl，看板 SSE 与轨迹共用）：`work` / `stuck`（带 problem） / `asked_coach` / `coach_instruction` / `resumed` / `thought`（空转独白） / `retrieved`（展开压缩摘要） / `idle_act`（空转选中的本地小动作）。
+事件：`work` / `stuck` / `asked_coach` / `coach_instruction` / `resumed` / `thought` / `retrieved` / `idle_act` / `verified_coach` / `coach_verdict` / `lesson`。`verified_coach` **不计入** `asked_coach`。`lesson` 是 Reflexion 的一行教训，retrieve 可以捡回来。
 
-## 何时升级（仅这些）
+## Verify 票（MID，不是 stuck）
 
-1. 同一工具连续失败两次
-2. 即将 mutate git 仓库或对 remote 写入（含 `git push`、`gh`、改 remote、写 `.git/`）
-3. 用户明确要求 review
-4. Worker 发出 `unsure`
+```json
+{
+  "kind": "verify",
+  "goal": "string",
+  "claim": "one sentence: what we did / will do",
+  "draft": "path + truncated unified-diff or excerpt",
+  "risk": "write|none"
+}
+```
 
-`git push` / remote write **必须**先 `ask`，禁止在 `act` 里直接执行。
+Coach 回复：`{"verdict":"accept|revise|halt","instruction":"1-2 sentences"}`。
 
-空转思考 **不是** 第五条升级条件。Idle thinking MUST NEVER call the coach。空转里如果要动工具，仍走 `act` + 上面四条，并记一条 `idle_act`。
+- `accept`：把暂扣的 write 落盘。教练不重写文件。
+- `revise`：丢弃草稿，注入 instruction，写一条 `lesson`，回到 `act`。
+- `halt`：丢弃草稿，停。
+
+`LOCAL_FOREMAN_MAX_VERIFIES` 硬限制 `verified_coach`。超过则跳过核对、留在本地（可自己落盘）。未设置不设上限。
 
 ## 轨迹
 
@@ -39,8 +67,9 @@ Local 干活。遇到问题先把问题说清楚，再问 Coach。Coach 只出�
 - `local-foreman ui` 默认打开 persist + idle，看板会慢慢长出心思日志。看板可下载同一条 jsonl（`/traj`）。
 - 一次性 CLI 默认仍是任务驱动；`--persist` 或 `LOCAL_FOREMAN_PERSIST=1` 才写盘并空转。
 - `local-foreman traj` / `python -m local_foreman traj` 读同一条 jsonl：默认 cat，`--last N` 只看最近，`--kind thought,idle_act,retrieved` 过滤，`--out path` 导出。`--stats` 统计本文件上的 ask / 教练回复。不另起一份日志。
-- 教练用量只数 `asked_coach` 与 `coach_instruction`。空转想法不计次。`COACH_USD_PER_ASK` 未设置时只报次数，不估美元。
-- `LOCAL_FOREMAN_MAX_ASKS` 硬限制 `asked_coach` 次数。未设置则不设上限。再问一次会超过上限时，跳过 ask，留在本地（空转或带原因 halt），绝不调用教练。
+- 教练用量：`asked_coach` / `coach_instruction` 是 HIGH。`verified_coach` / `coach_verdict` 另计，**不是** ask。空转想法不计次。`--stats` 可报 `verify_accept_rate`。`COACH_USD_PER_ASK` 未设置时只报次数，不估美元。
+- `LOCAL_FOREMAN_MAX_ASKS` 硬限制 `asked_coach`。超过则跳过 ask，留在本地，绝不调用教练。
+- `LOCAL_FOREMAN_MAX_VERIFIES` 硬限制 `verified_coach`。超过则跳过核对，留在本地。
 
 新的用户目标，或进入 `ask`，会把空转退避重置回起始间隔（约 5s，可配，加倍直到上限）。
 
@@ -81,7 +110,23 @@ Local **必须**把 `instruction` 写进下一轮 Worker system prompt（`## Coa
 
 ## 本机看板
 
-`python -m local_foreman ui` 在 `127.0.0.1:8765` 用 stdlib HTTP + SSE 展示：目标、当前状态、最后问题、教练指示、心思、教练用量、事件日志。中文状态：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想 / 展开原文 / 空转动手。空转、展开原文、空转动手都不得写成正在咨询大模型，也不计入教练次数。
+`python -m local_foreman ui` 在 `127.0.0.1:8765` 用 stdlib HTTP + SSE 展示：目标、当前状态、最后问题、教练指示、心思、教练用量、事件日志。中文状态：干活中 / **核对中** / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想 / 展开原文 / 空转动手。核对中、空转、展开原文、空转动手都不得写成正在咨询大模型。核对次数不计入 ask。
+
+## 对照台（mock only）
+
+`python -m local_foreman bench` 在同一组夹具上比 local-foreman（三条车道）和 remote-only（每步都问教练）。记录墙钟（注入 worker 5ms / verify 40ms / ask 80ms）、asks、verifies、token 代理（asks+verifies）、夹具通过率。质量在这里就是同一批 mock 任务的通过率，**不是**真实模型分数。不宣称三项目标已达成。
+
+## Related
+
+只列本协议真正用到的工作，不扩写：
+
+- Leviathan et al., speculative decoding (ICML 2023) — https://arxiv.org/abs/2211.17192
+- Speculative Actions (Ye et al., Columbia, arXiv 2510.04371) — https://arxiv.org/abs/2510.04371
+- FrugalGPT (Chen, Zaharia, Zou, TMLR 2024) — https://arxiv.org/abs/2305.05176
+- RouteLLM — https://github.com/lm-sys/RouteLLM
+- aider architect/editor — https://aider.chat/2024/09/26/architect.html
+- CRITIC (Gou et al., ICLR 2024) — https://arxiv.org/abs/2305.11738
+- Reflexion (Shinn et al., 2023) — https://arxiv.org/abs/2303.11366
 
 ## Tools v1
 

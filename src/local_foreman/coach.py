@@ -9,7 +9,14 @@ import urllib.request
 from typing import Optional, Protocol
 
 from local_foreman import __version__
-from local_foreman.ticket import CoachReply, Ticket, validate_reply
+from local_foreman.ticket import (
+    CoachReply,
+    Ticket,
+    VerifyReply,
+    VerifyTicket,
+    validate_reply,
+    validate_verify_reply,
+)
 from local_foreman.worker import extract_json_object
 
 COACH_SYSTEM = """You are a remote coach. You do not do the work.
@@ -26,6 +33,9 @@ class Coach(Protocol):
     def advise(self, ticket: Ticket) -> CoachReply:
         ...
 
+    def verify(self, ticket: VerifyTicket) -> VerifyReply:
+        ...
+
 
 _INSTRUCT = {
     "continue": "Proceed with the proposed next step. Keep all writes local.",
@@ -33,13 +43,33 @@ _INSTRUCT = {
     "halt": "Stop now. Do not mutate remotes or spend. Report and wait.",
 }
 
+_VERIFY_INSTRUCT = {
+    "accept": "Accept the local draft. Do not rewrite the file.",
+    "revise": "Revise the local draft. Follow this note; the coach will not rewrite the file.",
+    "halt": "Stop now. Do not apply the draft or spend.",
+}
+
+VERIFY_SYSTEM = """You are a remote coach verifying a local draft. You do not rewrite files.
+The ticket has kind=verify, a claim, and a short draft excerpt.
+Reply with JSON only: {"verdict":"accept|revise|halt","instruction":"1-2 sentences"}
+accept: the local draft is fine.
+revise: tell the local worker how to fix the draft.
+halt: stop.
+"""
+
 
 class MockCoach:
     """Deterministic coach. No network. Used for smoke."""
 
-    def __init__(self, verdicts: Optional[list[str]] = None):
+    def __init__(
+        self,
+        verdicts: Optional[list[str]] = None,
+        verify_verdicts: Optional[list[str]] = None,
+    ):
         self._verdicts = list(verdicts or [])
+        self._verify_verdicts = list(verify_verdicts or [])
         self.calls: list[Ticket] = []
+        self.verify_calls: list[VerifyTicket] = []
 
     def advise(self, ticket: Ticket) -> CoachReply:
         self.calls.append(ticket)
@@ -54,6 +84,18 @@ class MockCoach:
         next_tool = "read" if verdict == "revise" else None
         return validate_reply(
             CoachReply(verdict=verdict, instruction=_INSTRUCT[verdict], next_tool=next_tool)
+        )
+
+    def verify(self, ticket: VerifyTicket) -> VerifyReply:
+        self.verify_calls.append(ticket)
+        if self._verify_verdicts:
+            verdict = self._verify_verdicts.pop(0)
+        else:
+            verdict = "accept"
+        if verdict not in _VERIFY_INSTRUCT:
+            verdict = "accept"
+        return validate_verify_reply(
+            VerifyReply(verdict=verdict, instruction=_VERIFY_INSTRUCT[verdict])
         )
 
 
@@ -126,6 +168,49 @@ class OpenAICoach:
         if not data:
             raise RuntimeError("coach returned no JSON object")
         return validate_reply(CoachReply.from_dict(data))
+
+    def verify(self, ticket: VerifyTicket) -> VerifyReply:
+        if not self.api_key:
+            raise RuntimeError("COACH_API_KEY is empty; use LOCAL_FOREMAN_COACH=mock for smoke")
+        url = self._completions_url()
+        body = {
+            "model": self.model,
+            "temperature": 0,
+            "messages": [
+                {"role": "system", "content": VERIFY_SYSTEM},
+                {"role": "user", "content": json.dumps(ticket.to_dict(), ensure_ascii=False)},
+            ],
+        }
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Authorization": "Bearer " + self.api_key,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": USER_AGENT,
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:300]
+            raise RuntimeError(f"coach HTTP {exc.code}: {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"coach HTTP failed: {exc}") from exc
+        except TimeoutError as exc:
+            raise RuntimeError(f"coach timed out after {self.timeout}s") from exc
+        try:
+            content = payload["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise RuntimeError("coach response missing choices[0].message.content") from exc
+        raw = content if isinstance(content, str) else json.dumps(content)
+        data = extract_json_object(raw)
+        if not data:
+            raise RuntimeError("coach returned no JSON object")
+        return validate_verify_reply(VerifyReply.from_dict(data))
 
 
 def make_coach(

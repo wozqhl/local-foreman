@@ -1,6 +1,6 @@
 """Local live board: stdlib HTTP + SSE on 127.0.0.1:8765.
 
-Chinese status: 干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 /
+Chinese status: 干活中 / 核对中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 /
 空转中 / 自己在想 / 展开原文 / 空转动手.
 Mock demo needs no keys: read → fake escalate → apply continue.
 UI defaults persist+idle ON so the board grows a mind log. Idle never
@@ -30,6 +30,7 @@ DEMO_GOAL = "demo: 读 README，再假升级，按教练指示继续"
 
 STATE_LABELS = {
     "act": "干活中",
+    "verify": "核对中",
     "ask": "求助中（正在咨询大模型）",
     "apply": "已收到指示",
     "idle": "空转中",
@@ -43,6 +44,9 @@ EVENT_LABELS = {
     "thought": "自己在想",
     "retrieved": "展开原文",
     "idle_act": "空转动手",
+    "verified_coach": "核对中",
+    "coach_verdict": "已核对",
+    "lesson": "教训",
 }
 
 
@@ -54,6 +58,10 @@ def state_label(state: str, last_kind: str = "") -> str:
         return "空转动手"
     if last_kind == "retrieved":
         return "展开原文"
+    if last_kind == "verified_coach" or state == "verify":
+        return "核对中"
+    if last_kind == "coach_verdict":
+        return "已核对"
     if state == "idle":
         return "空转中"
     if last_kind in EVENT_LABELS:
@@ -96,6 +104,10 @@ class LiveBoard:
                 snap["estimated_usd"] = usage["estimated_usd"]
             if "max_asks" in usage:
                 snap["max_asks"] = usage["max_asks"]
+            snap["verifies"] = usage.get("verifies") or 0
+            snap["verify_replies"] = usage.get("verify_replies") or 0
+            if "max_verifies" in usage:
+                snap["max_verifies"] = usage["max_verifies"]
             return snap
 
     def reset(self, goal: str) -> None:
@@ -122,6 +134,10 @@ class LiveBoard:
             kind = ev.get("kind") or ""
             if kind in {"stuck", "asked_coach"}:
                 self.state = "ask"
+            elif kind == "verified_coach":
+                self.state = "verify"
+            elif kind == "coach_verdict":
+                self.state = "apply"
             elif kind == "coach_instruction":
                 self.state = "apply"
             elif kind == "thought":
@@ -411,7 +427,7 @@ def serve_forever(
     httpd, board = make_server(host, port, root)
     actual = httpd.server_address[1]
     print(f"本机看板: http://{host}:{actual}/", flush=True)
-    print("状态：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想 / 展开原文 / 空转动手", flush=True)
+    print("状态：干活中 / 核对中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想 / 展开原文 / 空转动手", flush=True)
     print("mock 演示无需 API key。空转只在本地想，不问教练。Ctrl+C 退出。", flush=True)
     board.load_traj(default_traj_path(root))
     if auto_demo:

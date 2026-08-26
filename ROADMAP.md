@@ -26,6 +26,8 @@
 - [x] Smoke：`ask-cost-ok`
 - [x] 硬上限 `LOCAL_FOREMAN_MAX_ASKS`：超过则跳过 ask，留在本地，不调用教练
 - [x] Smoke：`max-ask-ok`
+- [x] 风险车道 + 无损暂扣 verify（mock bench 给数字，不宣称已证明）
+- [x] Smoke：`verify-ok` / `bench-ok`
 
 ## 0.3 — Worker 更稳
 

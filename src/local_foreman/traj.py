@@ -5,9 +5,12 @@ memories, no remote coach). The raw file is never rewritten so a later retrieve
 can expand a summary back to the original lines.
 
 Coach usage is counted on this same file: asked_coach / coach_instruction.
-Idle thought / idle_act / retrieved never increment the tally. Estimated USD
-is optional and only appears when COACH_USD_PER_ASK is set.
+Verify events (verified_coach / coach_verdict) are a separate MID-lane tally
+and are NOT counted as asked_coach. Idle thought / idle_act / retrieved
+never increment either tally. Estimated USD is optional and only appears
+when COACH_USD_PER_ASK is set (asks only, not verifies).
 LOCAL_FOREMAN_MAX_ASKS hard-caps asked_coach (unset = no cap).
+LOCAL_FOREMAN_MAX_VERIFIES hard-caps verified_coach (unset = no cap).
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ TRAJ_FILENAME = "traj.jsonl"
 ENV_TRAJ = "LOCAL_FOREMAN_TRAJ"
 ENV_USD_PER_ASK = "COACH_USD_PER_ASK"
 ENV_MAX_ASKS = "LOCAL_FOREMAN_MAX_ASKS"
+ENV_MAX_VERIFIES = "LOCAL_FOREMAN_MAX_VERIFIES"
 
 EVENT_WORK = "work"
 EVENT_STUCK = "stuck"
@@ -32,6 +36,9 @@ EVENT_RESUMED = "resumed"
 EVENT_THOUGHT = "thought"
 EVENT_RETRIEVED = "retrieved"
 EVENT_IDLE_ACT = "idle_act"
+EVENT_VERIFIED_COACH = "verified_coach"
+EVENT_COACH_VERDICT = "coach_verdict"
+EVENT_LESSON = "lesson"
 
 EVENT_KINDS = (
     EVENT_WORK,
@@ -42,6 +49,9 @@ EVENT_KINDS = (
     EVENT_THOUGHT,
     EVENT_RETRIEVED,
     EVENT_IDLE_ACT,
+    EVENT_VERIFIED_COACH,
+    EVENT_COACH_VERDICT,
+    EVENT_LESSON,
 )
 
 DEFAULT_RECENT = 8
@@ -351,6 +361,20 @@ def coach_max_asks() -> Optional[int]:
     return value
 
 
+def coach_max_verifies() -> Optional[int]:
+    """Hard cap on verified_coach. Unset / invalid / negative -> no cap."""
+    raw = (os.environ.get(ENV_MAX_VERIFIES) or "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    if value < 0:
+        return None
+    return value
+
+
 def coach_stats(entries: list[dict[str, Any]]) -> dict[str, Any]:
     """Count ask / coach replies on this traj. Idle thoughts do not count.
 
@@ -361,13 +385,34 @@ def coach_stats(entries: list[dict[str, Any]]) -> dict[str, Any]:
     """
     asks = 0
     replies = 0
+    verifies = 0
+    verify_replies = 0
+    accepts = 0
     for ev in entries:
         kind = str(ev.get("kind") or "")
         if kind == EVENT_ASKED_COACH:
             asks += 1
         elif kind == EVENT_COACH_INSTRUCTION:
             replies += 1
-    out: dict[str, Any] = {"asks": asks, "replies": replies}
+        elif kind == EVENT_VERIFIED_COACH:
+            verifies += 1
+        elif kind == EVENT_COACH_VERDICT:
+            verify_replies += 1
+            reply = ev.get("reply")
+            verdict = ""
+            if isinstance(reply, dict):
+                verdict = str(reply.get("verdict") or "")
+            if verdict == "accept":
+                accepts += 1
+    out: dict[str, Any] = {
+        "asks": asks,
+        "replies": replies,
+        "verifies": verifies,
+        "verify_replies": verify_replies,
+        "verify_accepts": accepts,
+    }
+    if verify_replies:
+        out["verify_accept_rate"] = round(accepts / verify_replies, 4)
     usd = coach_usd_per_ask()
     if usd is not None:
         out["usd_per_ask"] = usd
@@ -375,6 +420,9 @@ def coach_stats(entries: list[dict[str, Any]]) -> dict[str, Any]:
     cap = coach_max_asks()
     if cap is not None:
         out["max_asks"] = cap
+    vcap = coach_max_verifies()
+    if vcap is not None:
+        out["max_verifies"] = vcap
     return out
 
 
@@ -383,12 +431,17 @@ def format_coach_stats(stats: dict[str, Any]) -> str:
     lines = [
         f"asks={int(stats.get('asks') or 0)}",
         f"replies={int(stats.get('replies') or 0)}",
+        f"verifies={int(stats.get('verifies') or 0)}",
     ]
+    if "verify_accept_rate" in stats:
+        lines.append(f"verify_accept_rate={stats['verify_accept_rate']}")
     if "estimated_usd" in stats:
         usd = stats["estimated_usd"]
         text = f"{float(usd):.6f}".rstrip("0").rstrip(".")
         lines.append(f"estimated_usd={text if text else '0'}")
     if "max_asks" in stats:
         lines.append(f"max_asks={int(stats['max_asks'])}")
+    if "max_verifies" in stats:
+        lines.append(f"max_verifies={int(stats['max_verifies'])}")
     return "\n".join(lines)
 

@@ -37,6 +37,8 @@ idle-act-ok
 traj-cli-ok
 ask-cost-ok
 max-ask-ok
+verify-ok
+bench-ok
 ```
 
 请不要在 PR 里加入会触发 `mlx_lm.load` 或 `OpenAICoach.advise` 的测试。

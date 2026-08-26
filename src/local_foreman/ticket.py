@@ -7,6 +7,10 @@ from typing import Any, Literal, Optional
 
 RISKS = ("write", "push", "spend", "none")
 VERDICTS = ("continue", "revise", "halt")
+VERIFY_RISKS = ("write", "none")
+VERIFY_VERDICTS = ("accept", "revise", "halt")
+MAX_CLAIM_CHARS = 240
+MAX_DRAFT_CHARS = 480
 MAX_FAILED_STEPS = 3
 MAX_LOG_CHARS = 240
 MAX_PROBLEM_CHARS = 480
@@ -157,3 +161,86 @@ def validate_reply(reply: CoachReply) -> CoachReply:
     if reply.next_tool is not None:
         reply.next_tool = str(reply.next_tool).strip() or None
     return reply
+
+
+@dataclass
+class VerifyTicket:
+    """MID-lane ticket. Compact draft check. Coach does not rewrite files."""
+
+    goal: str
+    claim: str
+    draft: str = ""
+    risk: Literal["write", "none"] = "none"
+    kind: str = "verify"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "verify",
+            "goal": self.goal,
+            "claim": self.claim,
+            "draft": self.draft,
+            "risk": self.risk,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "VerifyTicket":
+        return cls(
+            goal=str(data.get("goal", "")),
+            claim=str(data.get("claim", "")),
+            draft=str(data.get("draft", "")),
+            risk=data.get("risk", "none"),  # type: ignore[arg-type]
+            kind="verify",
+        )
+
+
+@dataclass
+class VerifyReply:
+    verdict: Literal["accept", "revise", "halt"]
+    instruction: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"verdict": self.verdict, "instruction": self.instruction}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "VerifyReply":
+        return cls(
+            verdict=data.get("verdict", ""),  # type: ignore[arg-type]
+            instruction=str(data.get("instruction", "")),
+        )
+
+
+def build_verify_claim(*, goal: str, what: str, reason: str = "") -> str:
+    """One sentence: what we did or will do."""
+    body = " ".join(str(what).split()) or "a local draft"
+    extra = (" " + " ".join(str(reason).split())) if reason else ""
+    return _short(f"Claim: {body}.{extra} Goal: {goal}.".strip(), MAX_CLAIM_CHARS)
+
+
+def validate_verify_ticket(ticket: VerifyTicket) -> VerifyTicket:
+    if not ticket.goal or not str(ticket.goal).strip():
+        raise TicketError("verify.goal is required")
+    risk = ticket.risk if ticket.risk in VERIFY_RISKS else "none"
+    ticket.risk = risk  # type: ignore[assignment]
+    ticket.kind = "verify"
+    ticket.goal = str(ticket.goal).strip()
+    ticket.claim = _short(ticket.claim, MAX_CLAIM_CHARS)
+    draft = str(ticket.draft or "")
+    if len(draft) > MAX_DRAFT_CHARS:
+        draft = draft[: MAX_DRAFT_CHARS - 3] + "..."
+    ticket.draft = draft
+    if not ticket.claim:
+        raise TicketError("verify.claim is required (one sentence: what we did/will do)")
+    return ticket
+
+
+def validate_verify_reply(reply: VerifyReply) -> VerifyReply:
+    if reply.verdict not in VERIFY_VERDICTS:
+        raise TicketError(
+            f"verify verdict must be one of {VERIFY_VERDICTS}, got {reply.verdict!r}"
+        )
+    text = " ".join(str(reply.instruction).split())
+    if not text:
+        raise TicketError("verify.instruction is required (1-2 sentences)")
+    reply.instruction = text
+    return reply
+

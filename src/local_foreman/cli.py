@@ -1,4 +1,4 @@
-"""CLI: python -m local_foreman "goal" | local-foreman ui | local-foreman traj | --smoke
+"""CLI: python -m local_foreman "goal" | local-foreman ui | traj | bench | --smoke
 
 One-shot stays task-driven unless --persist / LOCAL_FOREMAN_PERSIST=1.
 `ui` defaults persist+idle ON. Idle think never calls the coach.
@@ -897,6 +897,177 @@ def _smoke_max_asks(root: Path, errors: list[str]) -> None:
     print("max-ask-ok")
 
 
+
+def _smoke_verify(root: Path, errors: list[str]) -> None:
+    tmp = Path(tempfile.mkdtemp(prefix="lf-verify-"))
+    coach = MockCoach(verify_verdicts=["accept"])
+    worker = MockWorker(script=[
+        WorkerAction(
+            kind="tool",
+            tool="write",
+            args={"path": "note.txt", "content": "hello lanes"},
+            thought="draft write",
+        ),
+        WorkerAction(kind="done", thought="after verify"),
+    ])
+    loop = ForemanLoop(
+        worker=worker,
+        coach=coach,
+        root=tmp,
+        max_steps=10,
+        persist=False,
+        idle=False,
+    )
+    res = loop.run("smoke: verify write")
+    if "verify" not in res.states:
+        errors.append("verify-ok: write missed verify states=" + str(res.states))
+        return
+    if "ask" in res.states:
+        errors.append("verify-ok: write went ask states=" + str(res.states))
+        return
+    if coach.calls:
+        errors.append("verify-ok: write used advise not verify")
+        return
+    if len(coach.verify_calls) != 1:
+        errors.append("verify-ok: expected 1 verify call got " + str(len(coach.verify_calls)))
+        return
+    kinds = [e.get("kind") for e in res.events]
+    if "verified_coach" not in kinds or "coach_verdict" not in kinds:
+        errors.append("verify-ok: missing verified_coach/coach_verdict got=" + str(kinds))
+        return
+    if "asked_coach" in kinds:
+        errors.append("verify-ok: verify counted as asked_coach")
+        return
+    stats = coach_stats(res.events)
+    if int(stats.get("asks") or 0) != 0:
+        errors.append("verify-ok: asks incremented by verify " + str(stats))
+        return
+    if int(stats.get("verifies") or 0) != 1:
+        errors.append("verify-ok: verifies=" + str(stats.get("verifies")))
+        return
+    note = tmp / "note.txt"
+    if not note.is_file() or note.read_text(encoding="utf-8") != "hello lanes":
+        errors.append("verify-ok: accept did not apply held write")
+        return
+    ticket = coach.verify_calls[0]
+    draft = str(getattr(ticket, "draft", "") or "")
+    if "note.txt" not in draft and "b/note.txt" not in draft:
+        errors.append("verify-ok: draft missing path: " + draft[:160])
+        return
+    if getattr(ticket, "kind", "") != "verify":
+        errors.append("verify-ok: ticket.kind is not verify")
+        return
+
+    # lossless hold: revise discards the draft
+    tmp2 = Path(tempfile.mkdtemp(prefix="lf-verify-rev-"))
+    coach2 = MockCoach(verify_verdicts=["revise"])
+    worker2 = MockWorker(script=[
+        WorkerAction(
+            kind="tool",
+            tool="write",
+            args={"path": "drop.txt", "content": "should not land"},
+            thought="draft then revise",
+        ),
+        WorkerAction(kind="done", thought="after revise"),
+    ])
+    res2 = ForemanLoop(
+        worker=worker2, coach=coach2, root=tmp2, max_steps=10, persist=False, idle=False
+    ).run("smoke: verify revise discards")
+    if (tmp2 / "drop.txt").is_file():
+        errors.append("verify-ok: revise applied the held write")
+        return
+    if not any(e.get("kind") == "lesson" for e in res2.events):
+        errors.append("verify-ok: revise did not write a lesson")
+        return
+    if "ask" in res2.states:
+        errors.append("verify-ok: revise path went ask")
+        return
+
+    # CRITIC: valid .py skips verify
+    tmp3 = Path(tempfile.mkdtemp(prefix="lf-critic-"))
+    coach3 = MockCoach(verify_verdicts=["accept"])
+    worker3 = MockWorker(script=[
+        WorkerAction(
+            kind="tool",
+            tool="write",
+            args={"path": "ok.py", "content": "x = 1\n"},
+            thought="syntax-ok write",
+        ),
+        WorkerAction(kind="done", thought="critic skip"),
+    ])
+    res3 = ForemanLoop(
+        worker=worker3, coach=coach3, root=tmp3, max_steps=8, persist=False, idle=False
+    ).run("smoke: critic skip")
+    if coach3.verify_calls:
+        errors.append("verify-ok: critic-ok .py still called verify")
+        return
+    if "verify" in res3.states or "ask" in res3.states:
+        errors.append("verify-ok: critic-ok left act states=" + str(res3.states))
+        return
+    if (tmp3 / "ok.py").read_text(encoding="utf-8") != "x = 1\n":
+        errors.append("verify-ok: critic-ok did not write")
+        return
+
+    # speculation tax: rolling accept < 0.5 sends the next write to ask
+    tmp4 = Path(tempfile.mkdtemp(prefix="lf-tax-"))
+    tax_path = tmp4 / "traj.jsonl"
+    from local_foreman.traj import Trajectory
+    seeded = Trajectory(tax_path, goal="tax")
+    seeded.append({"kind": "coach_verdict", "reply": {"verdict": "revise", "instruction": "fix 1"}})
+    seeded.append({"kind": "coach_verdict", "reply": {"verdict": "revise", "instruction": "fix 2"}})
+    coach4 = MockCoach(["continue"])
+    worker4 = MockWorker(script=[
+        WorkerAction(
+            kind="tool",
+            tool="write",
+            args={"path": "tax.txt", "content": "taxed"},
+            thought="should go ask",
+        ),
+        WorkerAction(kind="done", thought="after tax ask"),
+    ])
+    res4 = ForemanLoop(
+        worker=worker4,
+        coach=coach4,
+        root=tmp4,
+        max_steps=10,
+        persist=True,
+        idle=False,
+        traj_path=tax_path,
+    ).run("smoke: speculation tax")
+    if "ask" not in res4.states:
+        errors.append("verify-ok: low accept rate did not send write to ask states=" + str(res4.states))
+        return
+    if (tmp4 / "tax.txt").is_file():
+        errors.append("verify-ok: taxed write was applied without accept")
+        return
+
+    from local_foreman.ui import load_index_html
+    html = load_index_html()
+    if "核对中" not in html:
+        errors.append("verify-ok: UI missing 核对中")
+        return
+    if "求助中（正在咨询大模型）" not in html:
+        errors.append("verify-ok: UI lost 求助中 copy")
+        return
+    print("verify-ok")
+
+
+def _smoke_bench(root: Path, errors: list[str]) -> None:
+    from local_foreman.bench import run_bench_suite
+
+    report = run_bench_suite(repo_root=root)
+    print(report.text())
+    if report.errors:
+        for e in report.errors:
+            errors.append("bench-ok: " + e)
+        return
+    local_rows = [r for r in report.rows if r.mode == "local-foreman"]
+    remote_rows = [r for r in report.rows if r.mode == "remote-only"]
+    if not local_rows or not remote_rows:
+        errors.append("bench-ok: missing mode rows")
+        return
+    print("bench-ok")
+
 def run_smoke() -> int:
     root = Path(__file__).resolve().parents[2]
     errors = []
@@ -985,6 +1156,8 @@ def run_smoke() -> int:
     _smoke_traj_cli(errors)
     _smoke_ask_cost(root, errors)
     _smoke_max_asks(root, errors)
+    _smoke_verify(root, errors)
+    _smoke_bench(root, errors)
 
     if errors:
         for e in errors:
@@ -999,13 +1172,17 @@ def main(argv=None) -> int:
         return run_ui(raw[1:])
     if raw and raw[0] == "traj":
         return run_traj(raw[1:])
+    if raw and raw[0] == "bench":
+        from local_foreman.bench import run_bench
+        return run_bench(raw[1:])
 
     parser = argparse.ArgumentParser(
         prog="local-foreman",
         description="Mac-first local agent: the local worker does the work; the remote coach only guides.",
     )
-    parser.add_argument("goal", nargs="*", help="one goal, or the word ui / traj")
+    parser.add_argument("goal", nargs="*", help="one goal, or the word ui / traj / bench")
     parser.add_argument("--smoke", action="store_true", help="run mock act/ask/apply checks")
+    parser.add_argument("--bench", action="store_true", help="mock comparison: lanes vs remote-only")
     parser.add_argument("--review", action="store_true", help="force ask (user asked for review)")
     parser.add_argument(
         "--worker",
@@ -1036,6 +1213,12 @@ def main(argv=None) -> int:
         os.environ["LOCAL_FOREMAN_WORKER"] = "mock"
         os.environ["LOCAL_FOREMAN_COACH"] = "mock"
         return run_smoke()
+
+    if args.bench:
+        os.environ["LOCAL_FOREMAN_WORKER"] = "mock"
+        os.environ["LOCAL_FOREMAN_COACH"] = "mock"
+        from local_foreman.bench import run_bench
+        return run_bench([])
 
     goal = " ".join(args.goal).strip()
     if not goal:
