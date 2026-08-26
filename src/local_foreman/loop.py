@@ -82,6 +82,7 @@ from local_foreman.worker import (
     Worker,
     WorkerAction,
     make_worker,
+    resolve_confidence,
 )
 
 
@@ -305,6 +306,7 @@ class ForemanLoop:
         observation: str = "",
         ticket: Optional[dict] = None,
         reply: Optional[dict] = None,
+        extra: Optional[dict] = None,
     ) -> dict:
         ev = {
             "kind": kind,
@@ -320,6 +322,10 @@ class ForemanLoop:
             ev["ticket"] = ticket
         if reply is not None:
             ev["reply"] = reply
+        if extra:
+            for key, val in extra.items():
+                if val is not None:
+                    ev[key] = val
         if self.traj is not None:
             ev = self.traj.append(ev)
         else:
@@ -627,6 +633,21 @@ class ForemanLoop:
                     observation=tr.short(),
                 )
                 return State.ACT.value, 0, pending, "", "none"
+            # DSP: do not verify every write once accept-rate is high.
+            if rate is not None and rate >= 0.75:
+                tr = execute(action.tool or "", action.args, root=self.root)
+                result.history.append(
+                    {"action": action.describe(), "result": tr.short()}
+                )
+                self._emit(
+                    result,
+                    EVENT_WORK,
+                    f"dsp-skip {action.describe()} → {tr.short()}",
+                    state=State.ACT.value,
+                    observation=tr.short(),
+                    extra={"conf": resolve_confidence(action), "act": action.describe()},
+                )
+                return State.ACT.value, 0, pending, "", "none"
             self._hold_write_for_verify(action, goal)
             self._emit(
                 result,
@@ -903,6 +924,12 @@ class ForemanLoop:
                     break
                 if self._pending_kind == "verify":
                     result.last_instruction = reply.instruction
+                    held = self._pending_verify_action
+                    cal = {
+                        "conf": resolve_confidence(held) if held is not None else None,
+                        "act": held.describe() if held is not None else (self._pending_claim or ""),
+                        "verdict": reply.verdict,
+                    }
                     self._emit(
                         result,
                         EVENT_COACH_VERDICT,
@@ -910,6 +937,7 @@ class ForemanLoop:
                         instruction=reply.instruction,
                         state=state.value,
                         reply=reply.to_dict(),
+                        extra=cal,
                     )
                     if reply.verdict == "halt":
                         self._discard_held_write()
