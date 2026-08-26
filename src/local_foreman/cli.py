@@ -957,6 +957,16 @@ def _smoke_verify(root: Path, errors: list[str]) -> None:
     if getattr(ticket, "kind", "") != "verify":
         errors.append("verify-ok: ticket.kind is not verify")
         return
+    verdict_ev = next((e for e in res.events if e.get("kind") == "coach_verdict"), None)
+    if verdict_ev is None:
+        errors.append("verify-ok: no coach_verdict event")
+        return
+    if verdict_ev.get("verdict") != "accept":
+        errors.append("verify-ok: calibration verdict=" + str(verdict_ev.get("verdict")))
+        return
+    if "conf" not in verdict_ev or "act" not in verdict_ev:
+        errors.append("verify-ok: missing EAGLE-2 calibration fields conf/act")
+        return
 
     # lossless hold: revise discards the draft
     tmp2 = Path(tempfile.mkdtemp(prefix="lf-verify-rev-"))
@@ -1178,7 +1188,7 @@ def main(argv=None) -> int:
 
     parser = argparse.ArgumentParser(
         prog="local-foreman",
-        description="Mac-first local agent: the local worker does the work; the remote coach only guides.",
+        description="Mac-first local agent: three risk lanes (low act / mid verify / high ask). Coach only guides.",
     )
     parser.add_argument("goal", nargs="*", help="one goal, or the word ui / traj / bench")
     parser.add_argument("--smoke", action="store_true", help="run mock act/ask/apply checks")

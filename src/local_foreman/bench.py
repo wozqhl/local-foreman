@@ -21,7 +21,6 @@ from typing import Callable, Optional
 from local_foreman.coach import MockCoach
 from local_foreman.loop import ForemanLoop
 from local_foreman.tools import execute
-from local_foreman.traj import coach_stats
 from local_foreman.worker import MockWorker, WorkerAction
 
 

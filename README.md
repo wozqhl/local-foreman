@@ -35,7 +35,7 @@
 
 HIGH 升级只发生在：同一工具连败两次、即将 mutate git / 写 remote、用户要求 review、Worker 发出 `unsure`。
 
-发给教练的不是仓库 dump，而是一句说清楚的问题：失败了什么、试过什么、现在需要什么。事件日志是一条轨迹：`work` → `stuck`（带问题）→ `asked_coach` → `coach_instruction` → `resumed`，空转再追加 `thought`，需要时还有 `retrieved` / `idle_act`。看板 SSE 和磁盘 jsonl 共用这一条，不另起一份日志。
+发给教练的不是仓库 dump，而是一句说清楚的问题：失败了什么、试过什么、现在需要什么。MID 写操作先 hold，`verify` 票是 claim+draft，`accept` 才落盘。事件日志是一条轨迹：`work` → `stuck`（带问题）→ `asked_coach` → `coach_instruction` → `resumed`，核对再追加 `verified_coach` / `coach_verdict`（不计 ask），空转再追加 `thought`，需要时还有 `retrieved` / `idle_act` / `lesson`。看板 SSE 和磁盘 jsonl 共用这一条，不另起一份日志。
 
 空转是附加能力，不是闭环的第五步。没待处理的 Ticket、也没在跑工具时，本地 Worker 可以写一句短独白；间隔大约从 5 秒起，加倍直到上限。新目标或进入 `ask` 会把退避清零。空转**不会**打教练；想动工具仍走 `act` 和原来的四条升级条件，并记 `idle_act`。
 
@@ -56,13 +56,14 @@ local-foreman ui
 页面会显示：目标、当前状态、最后问题陈述、最后一条教练指示、心思、事件日志。状态文案是中文：
 
 - **干活中** — 本地模型在工作
+- **核对中** — 教练在看本地草稿（claim+draft），不是求助，不计 ask
 - **求助中（正在咨询大模型）** — 已把问题说清楚，正在问教练
 - **已收到指示** — 教练的 `continue` / `revise` / `halt` 已回来
 - **继续** — 指示已写入 Worker system prompt，本地接着干
 - **空转中** / **自己在想** — 本地在想，没有问教练。看板默认打开 persist + idle，心思日志会慢慢变长
 - **展开原文** — 把压缩摘要按 seq 取回同一条 jsonl 的原文
 - **空转动手** — 空转选了一个本地小动作，仍走 `act`，没有问教练
-- **教练用量** — 同一条轨迹上的询问 / 回复次数。空转想法不计次；未设置 `COACH_USD_PER_ASK` 时不估美元
+- **教练用量** — 同一条轨迹上的询问 / 回复次数。核对另计，不计入 ask。空转想法不计次；未设置 `COACH_USD_PER_ASK` 时不估美元
 
 没有 API key 也能看：页面会跑一段 mock 演示（先读 README，再假装一次远端写入被拦住，教练回 `continue`，本地继续）。不要在 smoke 里打真实教练接口。
 
@@ -94,7 +95,7 @@ local-foreman "把 README 读一遍并总结"
 python -m local_foreman --worker mlx --coach openai "把 README 读一遍并总结"
 ```
 
-CLI 会逐行打印状态（`act` / `ask` / `apply`，persist 时还有 `idle`），最后打印 `done=`、`states=`、`problem=`、`verdicts=`。遇到 `halt` 以非 0 退出。
+CLI 会逐行打印状态（`act` / `verify` / `ask` / `apply`，persist 时还有 `idle`），最后打印 `done=`、`states=`、`problem=`、`verdicts=`。遇到 `halt` 以非 0 退出。
 一次性命令默认不写盘、不空转。要持续在场：
 
 ```bash

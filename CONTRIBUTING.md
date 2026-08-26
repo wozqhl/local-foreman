@@ -51,6 +51,7 @@ bench-ok
 4. 新增工具先走 `tools.py` 的 `needs_ask` / `classify_risk`。
 5. 不要在仓库里提交权重、`.env`、真实 API key。
 6. 空转思考不得调用教练。空转动手仍走 `act` 和四条升级。展开摘要只读本机 jsonl。轨迹只有一条 jsonl，不要再开一份平行日志。
+7. MID write 先无损暂扣，`accept` 才落盘；`verify` 不计 `asked_coach`。
 
 ## 提交
 
