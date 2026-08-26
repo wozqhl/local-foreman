@@ -10,9 +10,19 @@ While waiting for verify or ask, local may only pre-run read / git-ro.
 Never speculate a write (Speculative Actions Assumption 2).
 Pending write is applied only on coach accept; revise/halt discards it.
 
+AutoMix self-verify scores a pending claim locally before any verify/ask.
+Very-low p twice is HIGH ask only if it is already an escalate condition;
+hopeless work is not sent to the coach just to burn tokens. High p plus
+an existing CRITIC check stays LOW.
+
+EcoAssistant demo cache: on verify accept (file landed) store a compact
+(task_sketch, claim, draft/path) in `.local-foreman`. Later similar writes
+inject 1-2 demos into the worker system prompt. Local-only; never store
+coach rewrites.
+
 Event log (one jsonl trajectory): work / stuck+problem / asked_coach /
 coach_instruction / resumed / thought / retrieved / idle_act /
-verified_coach / coach_verdict.
+verified_coach / coach_verdict / self_verify / demo.
 Idle local think is extra: never calls the coach. Idle-act still honors
 the four HIGH rules; MID verify is skipped so idle never spends on verify.
 After ask-apply, the worker MUST continue with the coach instruction.
@@ -32,6 +42,16 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from local_foreman.coach import Coach, make_coach
+from local_foreman.demo import (
+    DEMO_CONTEXT_HEADER,
+    compact_demo,
+    default_demo_path,
+    load_demos,
+    render_demos,
+    similar_demos,
+    store_demo,
+)
+from local_foreman.self_verify import worker_score_claim
 from local_foreman.state import (
     ESCALATE_GIT_OR_REMOTE,
     ESCALATE_TOOL_FAILS_TWICE,
@@ -67,6 +87,8 @@ from local_foreman.traj import (
     EVENT_LESSON,
     EVENT_VERIFIED_COACH,
     EVENT_WORK,
+    EVENT_SELF_VERIFY,
+    EVENT_DEMO,
     Trajectory,
     compact_entries,
     default_traj_path,
@@ -91,6 +113,8 @@ REVIEW_HINTS = ("review", "please review", "ask coach", "look this over")
 COACH_INSTRUCTION_HEADER = "## Coach instruction (must follow)"
 TRAJ_CONTEXT_HEADER = "## Trajectory (compacted, local)"
 RETRIEVED_CONTEXT_HEADER = "## Retrieved (raw jsonl, local)"
+# Re-export so smoke / CLI can assert the same header the loop injects.
+DEMO_CONTEXT_HEADER = DEMO_CONTEXT_HEADER
 
 ENV_PERSIST = "LOCAL_FOREMAN_PERSIST"
 ENV_IDLE_START = "LOCAL_FOREMAN_IDLE_START"
@@ -162,6 +186,7 @@ class ForemanLoop:
         max_asks: Optional[int] = None,
         max_verifies: Optional[int] = None,
         verify_below: Optional[float] = None,
+        demo_path: Optional[Path] = None,
     ):
         self.worker = worker or make_worker()
         self.coach = coach or make_coach()
@@ -212,12 +237,20 @@ class ForemanLoop:
         self._pending_claim = ""
         self._pending_draft = ""
         self._pending_verify_risk = "none"
+        self.demo_path = Path(demo_path) if demo_path else default_demo_path(self.root)
+        self._goal = ""
+        self._low_p_streak = 0
 
     def _reset_backoff(self) -> None:
         self._idle_interval = self.idle_start
 
     def _system(self) -> str:
         parts = [WORKER_SYSTEM]
+        demos = similar_demos(load_demos(self.demo_path), goal=self._goal)
+        if demos:
+            body = render_demos(demos)
+            if body:
+                parts.append(DEMO_CONTEXT_HEADER + "\n" + body)
         if self.coach_instruction:
             parts.append(
                 COACH_INSTRUCTION_HEADER
@@ -523,6 +556,74 @@ class ForemanLoop:
             state=State.ACT.value,
         )
 
+    def _is_escalate_reason(self, reason: str) -> bool:
+        return reason in {
+            ESCALATE_TOOL_FAILS_TWICE,
+            ESCALATE_GIT_OR_REMOTE,
+            ESCALATE_UNSURE,
+            ESCALATE_USER_REVIEW,
+        }
+
+    def _self_verify(self, result: RunResult, action: WorkerAction, goal: str):
+        """Score locally before spending verify/ask. Never calls the coach."""
+        score = worker_score_claim(self.worker, action, goal=goal)
+        self._emit(
+            result,
+            EVENT_SELF_VERIFY,
+            f"self-verify p={score.p:.2f} {score.reason}",
+            state=State.ACT.value,
+            extra={
+                "p": score.p,
+                "self_verify_reason": score.reason,
+                "hopeless": score.hopeless,
+                "critic": score.critic,
+            },
+        )
+        return score
+
+    def _stay_local_low_p(
+        self,
+        result: RunResult,
+        score,
+        *,
+        escalate_reason: str = "",
+    ) -> str:
+        """Very-low p: do not spend coach unless this is already a HIGH escalate."""
+        if self._low_p_streak >= 2 and self._is_escalate_reason(escalate_reason):
+            return State.ASK.value
+        twice = self._low_p_streak >= 2
+        msg = (
+            "self-verify p very low twice, not an escalate — do not spend coach"
+            if twice
+            else "self-verify p very low — stay local, do not spend coach"
+        )
+        self._emit(
+            result,
+            EVENT_THOUGHT,
+            msg + f" (p={score.p:.2f})",
+            state=State.ACT.value,
+        )
+        return State.ACT.value
+
+    def _store_accepted_demo(
+        self,
+        result: RunResult,
+        *,
+        goal: str,
+        path: str,
+        claim: str,
+        draft: str,
+    ) -> None:
+        rec = compact_demo(goal=goal, claim=claim, path=path, draft=draft)
+        stored = store_demo(self.demo_path, rec)
+        self._emit(
+            result,
+            EVENT_DEMO,
+            f"cached local demo {path}",
+            state=State.ACT.value,
+            extra={"demo": stored},
+        )
+
     def _rolling_accept_rate(self, result: RunResult) -> Optional[float]:
         entries = self.traj.entries if self.traj is not None else result.events
         recent: list[str] = []
@@ -605,6 +706,39 @@ class ForemanLoop:
         if is_write and not from_idle:
             path = str((action.args or {}).get("path") or "")
             content = str((action.args or {}).get("content") or "")
+            score = self._self_verify(result, action, goal)
+            if score.high and score.critic is True:
+                self._low_p_streak = 0
+                tr = execute(action.tool or "", action.args, root=self.root)
+                result.history.append(
+                    {"action": action.describe(), "result": tr.short()}
+                )
+                self._emit(
+                    result,
+                    EVENT_WORK,
+                    f"critic-ok {action.describe()} → {tr.short()}",
+                    state=State.ACT.value,
+                    observation=tr.short(),
+                )
+                return State.ACT.value, 0, pending, "", "none"
+            if score.very_low:
+                self._low_p_streak += 1
+                nxt = self._stay_local_low_p(result, score)
+                if nxt == State.ASK.value:
+                    pending_reason = ESCALATE_UNSURE
+                    pending_risk = "write"
+                    self._mark_stuck(
+                        result,
+                        goal,
+                        action,
+                        failed_logs,
+                        pending_reason,
+                        pending_risk,
+                        state=State.ASK.value,
+                    )
+                    return State.ASK.value, fail_streak, pending, pending_reason, pending_risk
+                return State.ACT.value, fail_streak, pending, "", "none"
+            self._low_p_streak = 0
             rate = self._rolling_accept_rate(result)
             if rate is not None and rate < 0.5:
                 pending_reason = "verify accept rate below 0.5; sending write to ask"
@@ -687,6 +821,25 @@ class ForemanLoop:
         # MID: one failure, not yet twice. Idle skips verify.
         if from_idle:
             return State.ACT.value, fail_streak, pending, "", "none"
+        score = self._self_verify(result, action, goal)
+        if score.very_low:
+            self._low_p_streak += 1
+            nxt = self._stay_local_low_p(result, score)
+            if nxt == State.ASK.value:
+                pending_reason = ESCALATE_TOOL_FAILS_TWICE
+                pending_risk = tr.risk
+                self._mark_stuck(
+                    result,
+                    goal,
+                    action,
+                    failed_logs,
+                    pending_reason,
+                    pending_risk,
+                    state=State.ASK.value,
+                )
+                return State.ASK.value, fail_streak, pending, pending_reason, pending_risk
+            return State.ACT.value, fail_streak, pending, "", "none"
+        self._low_p_streak = 0
         self._pending_verify_action = action
         self._pending_claim = build_verify_claim(
             goal=goal,
@@ -755,6 +908,8 @@ class ForemanLoop:
         self._pending_claim = ""
         self._pending_draft = ""
         self._pending_verify_risk = "none"
+        self._goal = goal
+        self._low_p_streak = 0
         state = State.ACT
         fail_streak = 0
         failed_logs: list[str] = []
@@ -944,7 +1099,23 @@ class ForemanLoop:
                         result.done_reason = "halt: " + reply.instruction
                         break
                     if reply.verdict == "accept":
+                        held = self._pending_verify_action
+                        claim = self._pending_claim
+                        draft = self._pending_draft
+                        held_path = ""
+                        if held is not None:
+                            held_path = str((held.args or {}).get("path") or "")
                         self._apply_held_write(result)
+                        if held is not None and (held.tool or "") == "write" and held_path:
+                            landed = self.root / held_path if not Path(held_path).is_absolute() else Path(held_path)
+                            if landed.is_file():
+                                self._store_accepted_demo(
+                                    result,
+                                    goal=goal,
+                                    path=held_path,
+                                    claim=claim,
+                                    draft=draft,
+                                )
                         self._pending_kind = ""
                         self._pending_claim = ""
                         self._pending_draft = ""

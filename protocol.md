@@ -20,7 +20,9 @@
 - **不要每笔 write 都核对**：滚动 accept 率已经高时，跳过 verify，直接落盘（DSP）。率低（< 0.5）则下一笔 write 升到 `ask`（speculation tax）。
 - **一次工具失败先本地自修**（EcoAssistant），不要立刻 HIGH ask；**两次失败才 ask**。一次失败也可以进 MID 核对。
 - **raw confidence 不是唯一门**（AutoMix）。路由先看工具种类（读留下、写核对），再叠加本地检查 / 校准率。
+- **先本地自核再花钱**（AutoMix）：worker 或廉价检查给 pending claim 打 p。p 很低两次且不是升级条件，则不要把无望的活送给教练烧 token；p 高且已有 CRITIC 本地检查则留在 LOW。
 - 有本地检查且通过（CRITIC：例如 `.py` 干跑 `ast.parse`）则跳过 verify，直接落盘。
+- **成功落盘的 write 做本地 demo 缓存**（EcoAssistant）：`verify` accept 后把 `(task_sketch, claim, draft/path)` 存在 `.local-foreman`，以后相似 write 注入 1–2 条 demo。只存本地，不存教练改写。
 
 `git push` / remote write **必须**先 `ask`，禁止在 `act` 里直接执行。空转本身不问教练；空转动手仍走 `act` + HIGH 四条，MID verify 会跳过。
 
@@ -42,7 +44,7 @@
 
 循环：`act` →（low 留下 \| verify \| ask）→ `apply` → `act`。`halt` 在 `apply` 结束。`idle` 不进入这条闭环。
 
-事件：`work` / `stuck` / `asked_coach` / `coach_instruction` / `resumed` / `thought` / `retrieved` / `idle_act` / `verified_coach` / `coach_verdict` / `lesson`。`verified_coach` **不计入** `asked_coach`。`lesson` 是 Reflexion 的一行教训（revise 时追加），retrieve 可以捡回来。`coach_verdict` 带 `(conf, act, verdict)`，留给以后 EAGLE-2 校准，不当当场的唯一门。
+事件：`work` / `stuck` / `asked_coach` / `coach_instruction` / `resumed` / `thought` / `retrieved` / `idle_act` / `verified_coach` / `coach_verdict` / `lesson` / `self_verify` / `demo`。`verified_coach` **不计入** `asked_coach`。`lesson` 是 Reflexion 的一行教训（revise 时追加），retrieve 可以捡回来。`coach_verdict` 带 `(conf, act, verdict)`，留给以后 EAGLE-2 校准，不当当场的唯一门。
 
 ## Verify 票（MID，不是 stuck）
 

@@ -117,7 +117,7 @@ local-foreman traj --out /tmp/traj.jsonl
 local-foreman traj --stats
 ```
 
-`--last N` 只看最近，`--kind` 按逗号过滤，`--out` 导出仍是同一份 jsonl。`--stats` 统计本文件上的教练询问 / 回复次数；空转想法不计次。只有设置了 `COACH_USD_PER_ASK` 才额外估算美元，默认只报次数。`LOCAL_FOREMAN_MAX_ASKS` 是询问硬上限：再问一次会超过则跳过 ask，留在本地，不调用教练。路径默认 `$LOCAL_FOREMAN_TRAJ` 或 `<cwd>/.local-foreman/traj.jsonl`。看板页也可下载同一文件，并显示同一份用量。
+`--last N` 只看最近，`--kind` 按逗号过滤，`--out` 导出仍是同一份 jsonl。`--stats` 统计本文件上的教练询问 / 回复次数；空转想法不计次。只有设置了 `COACH_USD_PER_ASK` 才额外估算美元，默认只报次数。`LOCAL_FOREMAN_MAX_ASKS` 是询问硬上限：再问一次会超过则跳过 ask，留在本地，不调用教练。路径默认 `$LOCAL_FOREMAN_TRAJ` 或 `<cwd>/.local-foreman/traj.jsonl`。看板页也可下载同一文件，并显示同一份用量。verify accept 落盘后还会在同一 `.local-foreman` 目录写本地 demo 缓存（`demos.jsonl`），不上传、不存教练改写。
 
 没有 Mac、或不想下载权重时，整条协议仍可用 mock 跑：
 
@@ -190,6 +190,8 @@ ask-cost-ok
 max-ask-ok
 verify-ok
 bench-ok
+self-verify-ok
+demo-ok
 ```
 
 含义：
@@ -210,6 +212,8 @@ bench-ok
 14. `max-ask-ok` — `LOCAL_FOREMAN_MAX_ASKS=1` 时第一次 ask 会打教练，第二次升级跳过，不调用教练
 15. `verify-ok` — 本地 write 走 `verify` → `accept` 才落盘，不走 `ask`；revise 丢弃草稿
 16. `bench-ok` — mock 对照台：local asks+verifies < remote-only 调用，local 墙钟更短，夹具通过率相同
+17. `self-verify-ok` — 本地自核：高 p + CRITIC 留在 LOW；p 很低两次且非升级不打教练；真升级仍走 ask
+18. `demo-ok` — verify accept 后本地缓存 demo，相似 write 注入 worker；revise / ask / 教练改写不入库
 
 GitHub Actions（[`.github/workflows/smoke.yml`](.github/workflows/smoke.yml)）在 Ubuntu + Python 3.11 上只跑这一条 mock smoke。
 

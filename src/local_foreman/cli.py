@@ -22,6 +22,12 @@ from pathlib import Path
 from typing import Optional
 
 from local_foreman.coach import MockCoach
+from local_foreman.demo import (
+    DEMO_CONTEXT_HEADER,
+    compact_demo,
+    default_demo_path,
+    load_demos,
+)
 from local_foreman.loop import (
     COACH_INSTRUCTION_HEADER,
     ENV_PERSIST,
@@ -29,6 +35,7 @@ from local_foreman.loop import (
     ForemanLoop,
     env_flag,
 )
+from local_foreman.self_verify import score_pending_claim
 from local_foreman.ticket import problem_is_clear
 from local_foreman.traj import (
     Trajectory,
@@ -1078,6 +1085,299 @@ def _smoke_bench(root: Path, errors: list[str]) -> None:
         return
     print("bench-ok")
 
+
+def _smoke_self_verify(root: Path, errors: list[str]) -> None:
+    from local_foreman.self_verify import HIGH_P, VERY_LOW_P
+
+    hopeless = score_pending_claim(
+        WorkerAction(
+            kind="tool",
+            tool="write",
+            args={"path": "nope.txt", "content": "still clearly unsolvable"},
+            thought="this is clearly unsolvable",
+            confidence=0.05,
+        ),
+        goal="smoke: hopeless claim",
+    )
+    if not hopeless.very_low or not hopeless.hopeless:
+        errors.append(
+            "self-verify-ok: hopeless claim not very-low "
+            + str((hopeless.p, hopeless.reason, hopeless.hopeless))
+        )
+        return
+    high = score_pending_claim(
+        WorkerAction(
+            kind="tool",
+            tool="write",
+            args={"path": "ok.py", "content": "x = 1\n"},
+            thought="syntax-ok write",
+            confidence=0.9,
+        ),
+        goal="smoke: high critic",
+    )
+    if not high.high or high.critic is not True or high.p < HIGH_P:
+        errors.append(
+            "self-verify-ok: high+critic score failed "
+            + str((high.p, high.critic, high.reason))
+        )
+        return
+    if very_low_used := (VERY_LOW_P <= 0):
+        errors.append("self-verify-ok: VERY_LOW_P unset")
+        return
+    del very_low_used
+
+    tmp = Path(tempfile.mkdtemp(prefix="lf-self-hi-"))
+    coach = MockCoach(verify_verdicts=["accept"])
+    worker = MockWorker(script=[
+        WorkerAction(
+            kind="tool",
+            tool="write",
+            args={"path": "ok.py", "content": "x = 1\n"},
+            thought="syntax-ok write",
+            confidence=0.9,
+        ),
+        WorkerAction(kind="done", thought="high+critic stay low"),
+    ])
+    res = ForemanLoop(
+        worker=worker, coach=coach, root=tmp, max_steps=8, persist=False, idle=False
+    ).run("smoke: self-verify high critic")
+    if coach.verify_calls or coach.calls:
+        errors.append("self-verify-ok: high+critic still spent coach")
+        return
+    if "verify" in res.states or "ask" in res.states:
+        errors.append("self-verify-ok: high+critic left LOW states=" + str(res.states))
+        return
+    if (tmp / "ok.py").read_text(encoding="utf-8") != "x = 1\n":
+        errors.append("self-verify-ok: high+critic did not write")
+        return
+    if not any(e.get("kind") == "self_verify" for e in res.events):
+        errors.append("self-verify-ok: missing self_verify event")
+        return
+
+    tmp2 = Path(tempfile.mkdtemp(prefix="lf-self-lo-"))
+    coach2 = MockCoach(verify_verdicts=["accept", "accept"], verdicts=["continue"])
+    worker2 = MockWorker(script=[
+        WorkerAction(
+            kind="tool",
+            tool="write",
+            args={"path": "a.txt", "content": "clearly unsolvable draft"},
+            thought="clearly unsolvable",
+            confidence=0.05,
+        ),
+        WorkerAction(
+            kind="tool",
+            tool="write",
+            args={"path": "b.txt", "content": "still hopeless"},
+            thought="hopeless again",
+            confidence=0.04,
+        ),
+        WorkerAction(kind="done", thought="stayed local"),
+    ])
+    res2 = ForemanLoop(
+        worker=worker2, coach=coach2, root=tmp2, max_steps=10, persist=False, idle=False
+    ).run("smoke: self-verify hopeless twice")
+    if coach2.verify_calls or coach2.calls:
+        errors.append("self-verify-ok: hopeless writes spent coach tokens")
+        return
+    if "verify" in res2.states or "ask" in res2.states:
+        errors.append("self-verify-ok: hopeless twice went coach states=" + str(res2.states))
+        return
+    if (tmp2 / "a.txt").is_file() or (tmp2 / "b.txt").is_file():
+        errors.append("self-verify-ok: hopeless writes were applied")
+        return
+    lows = [e for e in res2.events if e.get("kind") == "self_verify"]
+    if len(lows) < 2:
+        errors.append("self-verify-ok: expected 2 self_verify events got " + str(len(lows)))
+        return
+    if not any("twice" in str(e.get("message") or "") for e in res2.events):
+        errors.append("self-verify-ok: missing twice-stay-local thought")
+        return
+
+    tmp3 = Path(tempfile.mkdtemp(prefix="lf-self-esc-"))
+    push_cmd = "git " + "push" + " origin HEAD"
+    coach3 = MockCoach(["continue"])
+    worker3 = MockWorker(script=[
+        WorkerAction(
+            kind="tool",
+            tool="write",
+            args={"path": "c.txt", "content": "clearly unsolvable"},
+            thought="unsolvable",
+            confidence=0.05,
+        ),
+        WorkerAction(
+            kind="tool",
+            tool="write",
+            args={"path": "d.txt", "content": "hopeless"},
+            thought="hopeless",
+            confidence=0.05,
+        ),
+        WorkerAction(
+            kind="tool",
+            tool="shell",
+            args={"cmd": push_cmd},
+            thought="real escalate",
+            confidence=0.05,
+        ),
+        WorkerAction(kind="done", thought="after escalate"),
+    ])
+    res3 = ForemanLoop(
+        worker=worker3, coach=coach3, root=tmp3, max_steps=12, persist=False, idle=False
+    ).run("smoke: self-verify then escalate")
+    if coach3.verify_calls:
+        errors.append("self-verify-ok: hopeless path used verify")
+        return
+    if len(coach3.calls) != 1:
+        errors.append("self-verify-ok: escalate expected 1 ask got " + str(len(coach3.calls)))
+        return
+    if "ask" not in res3.states:
+        errors.append("self-verify-ok: escalate condition missed ask states=" + str(res3.states))
+        return
+    print("self-verify-ok")
+
+
+def _smoke_demo(root: Path, errors: list[str]) -> None:
+    tmp = Path(tempfile.mkdtemp(prefix="lf-demo-"))
+    demo_path = default_demo_path(tmp)
+    coach = MockCoach(verify_verdicts=["accept"])
+    worker = MockWorker(script=[
+        WorkerAction(
+            kind="tool",
+            tool="write",
+            args={"path": "note.txt", "content": "hello demos"},
+            thought="draft write",
+            confidence=0.4,
+        ),
+        WorkerAction(kind="done", thought="after accept"),
+    ])
+    res = ForemanLoop(
+        worker=worker,
+        coach=coach,
+        root=tmp,
+        max_steps=10,
+        persist=False,
+        idle=False,
+        demo_path=demo_path,
+    ).run("smoke: demo cache write a local note")
+    if "verify" not in res.states:
+        errors.append("demo-ok: seed write missed verify states=" + str(res.states))
+        return
+    if not (tmp / "note.txt").is_file():
+        errors.append("demo-ok: accept did not land the file")
+        return
+    if not demo_path.is_file():
+        errors.append("demo-ok: demos.jsonl not written under .local-foreman")
+        return
+    if ".local-foreman" not in demo_path.parts:
+        errors.append("demo-ok: cache not in .local-foreman dir")
+        return
+    cached = load_demos(demo_path)
+    if not cached:
+        errors.append("demo-ok: cache empty after accept")
+        return
+    rec = cached[-1]
+    for key in ("task_sketch", "claim", "path"):
+        if not rec.get(key):
+            errors.append("demo-ok: missing " + key)
+            return
+    if rec.get("path") != "note.txt":
+        errors.append("demo-ok: path=" + str(rec.get("path")))
+        return
+    for bad in ("instruction", "rewrite", "verdict", "coach", "reply"):
+        if bad in rec:
+            errors.append("demo-ok: stored coach rewrite field " + bad)
+            return
+    if not any(e.get("kind") == "demo" for e in res.events):
+        errors.append("demo-ok: missing demo event after accept")
+        return
+
+    dirty = compact_demo(
+        goal="x", claim="c", path="p.txt", draft="d"
+    )
+    dirty["instruction"] = "coach rewrite should never persist"
+    dirty["verdict"] = "accept"
+    from local_foreman.demo import store_demo
+    store_demo(demo_path, dirty)
+    for rec2 in load_demos(demo_path):
+        if "instruction" in rec2 or "verdict" in rec2:
+            errors.append("demo-ok: sanitize kept coach rewrite")
+            return
+
+    worker2 = MockWorker(script=[
+        WorkerAction(
+            kind="tool",
+            tool="write",
+            args={"path": "note2.txt", "content": "similar note"},
+            thought="another write",
+            confidence=0.4,
+        ),
+        WorkerAction(kind="done", thought="after inject"),
+    ])
+    coach2 = MockCoach(verify_verdicts=["accept"])
+    loop2 = ForemanLoop(
+        worker=worker2,
+        coach=coach2,
+        root=tmp,
+        max_steps=10,
+        persist=False,
+        idle=False,
+        demo_path=demo_path,
+    )
+    res2 = loop2.run("smoke: demo cache write a local note again")
+    sys_txt = worker2.last_system or ""
+    if DEMO_CONTEXT_HEADER not in sys_txt:
+        errors.append("demo-ok: similar write missing demo header in system")
+        return
+    if "note.txt" not in sys_txt and "hello demos" not in sys_txt:
+        errors.append("demo-ok: injected demos missing prior path/claim")
+        return
+    if "coach rewrite" in sys_txt or "must follow" in sys_txt.lower() and "Coach instruction" in sys_txt:
+        # coach instruction header is fine if empty; rewrite text must not appear
+        if "coach rewrite should never persist" in sys_txt:
+            errors.append("demo-ok: coach rewrite leaked into worker prompt")
+            return
+
+    tmp3 = Path(tempfile.mkdtemp(prefix="lf-demo-rev-"))
+    demo3 = default_demo_path(tmp3)
+    coach3 = MockCoach(verify_verdicts=["revise"])
+    worker3 = MockWorker(script=[
+        WorkerAction(
+            kind="tool",
+            tool="write",
+            args={"path": "drop.txt", "content": "should not cache"},
+            thought="draft then revise",
+            confidence=0.4,
+        ),
+        WorkerAction(kind="done", thought="after revise"),
+    ])
+    ForemanLoop(
+        worker=worker3, coach=coach3, root=tmp3, max_steps=10,
+        persist=False, idle=False, demo_path=demo3,
+    ).run("smoke: demo revise must not cache")
+    if demo3.is_file() and load_demos(demo3):
+        errors.append("demo-ok: revise stored a demo")
+        return
+    if (tmp3 / "drop.txt").is_file():
+        errors.append("demo-ok: revise landed a file")
+        return
+
+    tmp4 = Path(tempfile.mkdtemp(prefix="lf-demo-ask-"))
+    demo4 = default_demo_path(tmp4)
+    push_cmd = "git " + "push" + " origin HEAD"
+    coach4 = MockCoach(["continue"])
+    worker4 = MockWorker(script=[
+        WorkerAction(kind="tool", tool="shell", args={"cmd": push_cmd}, thought="fake remote"),
+        WorkerAction(kind="done", thought="after ask"),
+    ])
+    ForemanLoop(
+        worker=worker4, coach=coach4, root=tmp4, max_steps=10,
+        persist=False, idle=False, demo_path=demo4,
+    ).run("smoke: demo ask must not cache")
+    if demo4.is_file() and load_demos(demo4):
+        errors.append("demo-ok: ask path stored a demo")
+        return
+    print("demo-ok")
+
+
 def run_smoke() -> int:
     root = Path(__file__).resolve().parents[2]
     errors = []
@@ -1168,6 +1468,8 @@ def run_smoke() -> int:
     _smoke_max_asks(root, errors)
     _smoke_verify(root, errors)
     _smoke_bench(root, errors)
+    _smoke_self_verify(root, errors)
+    _smoke_demo(root, errors)
 
     if errors:
         for e in errors:

@@ -7,7 +7,7 @@ can expand a summary back to the original lines.
 Coach usage is counted on this same file: asked_coach / coach_instruction.
 Verify events (verified_coach / coach_verdict) are a separate MID-lane tally
 and are NOT counted as asked_coach. Idle thought / idle_act / retrieved
-never increment either tally. Estimated USD is optional and only appears
+/ self_verify / demo never increment either tally. Estimated USD is optional and only appears
 when COACH_USD_PER_ASK is set (asks only, not verifies).
 LOCAL_FOREMAN_MAX_ASKS hard-caps asked_coach (unset = no cap).
 LOCAL_FOREMAN_MAX_VERIFIES hard-caps verified_coach (unset = no cap).
@@ -39,6 +39,8 @@ EVENT_IDLE_ACT = "idle_act"
 EVENT_VERIFIED_COACH = "verified_coach"
 EVENT_COACH_VERDICT = "coach_verdict"
 EVENT_LESSON = "lesson"
+EVENT_SELF_VERIFY = "self_verify"
+EVENT_DEMO = "demo"
 
 EVENT_KINDS = (
     EVENT_WORK,
@@ -52,6 +54,8 @@ EVENT_KINDS = (
     EVENT_VERIFIED_COACH,
     EVENT_COACH_VERDICT,
     EVENT_LESSON,
+    EVENT_SELF_VERIFY,
+    EVENT_DEMO,
 )
 
 DEFAULT_RECENT = 8

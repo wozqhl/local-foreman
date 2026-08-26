@@ -19,6 +19,8 @@ When idle, emit a short local {"kind":"thought"} monologue. Idle thoughts never
 ask the coach. If you want a tool while idle, emit kind=tool; it still goes
 through act and the existing escalate rules. Compacted trajectory summaries
 may be expanded back to raw jsonl under ## Retrieved; that is local, not coach.
+Local EcoAssistant demos may appear under ## Local demos; they are accepted
+local writes, never coach rewrites.
 """
 
 DEFAULT_MLX_MODEL = "mlx-community/Qwen3-8B-4bit"

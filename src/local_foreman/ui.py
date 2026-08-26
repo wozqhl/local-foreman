@@ -47,6 +47,8 @@ EVENT_LABELS = {
     "verified_coach": "核对中",
     "coach_verdict": "已核对",
     "lesson": "教训",
+    "self_verify": "本地自核",
+    "demo": "本地示范",
 }
 
 

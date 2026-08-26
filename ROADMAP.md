@@ -28,6 +28,9 @@
 - [x] Smoke：`max-ask-ok`
 - [x] 风险车道 + 无损暂扣 verify（mock bench 给数字，不宣称已证明）
 - [x] Smoke：`verify-ok` / `bench-ok`
+- [x] AutoMix 本地自核（低 p 两次且非升级则不烧教练）
+- [x] EcoAssistant demo 缓存（verify accept 后本地注入）
+- [x] Smoke：`self-verify-ok` / `demo-ok`
 
 ## 0.3 — Worker 更稳
 

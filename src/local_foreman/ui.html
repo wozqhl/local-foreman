@@ -76,6 +76,8 @@
   .tag.verified_coach { color: var(--verify); }
   .tag.coach_verdict { color: var(--got); }
   .tag.lesson { color: var(--muted); }
+  .tag.self_verify { color: var(--idle); }
+  .tag.demo { color: var(--go); }
   footer { margin-top: 18px; color: var(--muted); font-size: 12px; }
 </style>
 </head>
@@ -124,7 +126,7 @@
   </section>
 
   <section class="log">
-    <h2>心思 / 事件 work · thought · idle_act · retrieved · verified_coach · coach_verdict · stuck · asked_coach · coach_instruction · resumed</h2>
+    <h2>心思 / 事件 work · thought · idle_act · retrieved · self_verify · demo · verified_coach · coach_verdict · stuck · asked_coach · coach_instruction · resumed</h2>
     <div id="log"></div>
   </section>
   <footer>只监听 127.0.0.1:8765 · python -m local_foreman ui · python -m local_foreman traj --stats 统计同一条 jsonl 的 ask / verify · 求助中会标明正在咨询大模型 · 核对中不是求助 · 空转中 / 自己在想 / 展开原文 / 空转动手 不是求助，也不计 ask 次数</footer>
@@ -141,7 +143,9 @@ const LABELS = {
   idle_act: "空转动手",
   verified_coach: "核对中",
   coach_verdict: "已核对",
-  lesson: "教训"
+  lesson: "教训",
+  self_verify: "本地自核",
+  demo: "本地示范"
 };
 const HINTS = {
   work: "本地模型正在干活",
@@ -154,6 +158,8 @@ const HINTS = {
   idle_act: "空转选了本地小动作，走 act，不问教练",
   verified_coach: "核对中：教练在看本地草稿，不是求助",
   coach_verdict: "核对结果已回来",
+  self_verify: "本地自核：还没花钱问教练",
+  demo: "本地示范：verify accept 后缓存，不是教练改写",
   act: "本地模型正在干活",
   verify: "核对中：教练在看本地草稿，不是求助",
   ask: "求助中（正在咨询大模型）",

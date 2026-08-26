@@ -2,6 +2,14 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.2.6] — 2026-08-26
+
+### Added
+
+- AutoMix 本地自核：发 verify/ask 之前，worker 或廉价检查给 pending claim 打 p。p 很低两次且不是升级条件则不把无望的活送给教练烧 token；p 高且已有 CRITIC 检查则留在 LOW。
+- EcoAssistant 本地 demo 缓存：`verify` accept（文件落盘）后把 `(task_sketch, claim, draft/path)` 存在 `.local-foreman`。以后相似 write 注入 1–2 条 demo 到 worker system prompt。只存本地，不存教练改写。
+- Smoke：`self-verify-ok`、`demo-ok`。原有 token 保留，仍只走 mock。无损暂扣、工具种类路由、DSP skip、speculation tax、MAX_ASKS / MAX_VERIFIES 保持。
+
 ## [0.2.5] — 2026-08-26
 
 ### Added
