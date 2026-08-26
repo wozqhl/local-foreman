@@ -94,6 +94,8 @@ class LiveBoard:
             }
             if "estimated_usd" in usage:
                 snap["estimated_usd"] = usage["estimated_usd"]
+            if "max_asks" in usage:
+                snap["max_asks"] = usage["max_asks"]
             return snap
 
     def reset(self, goal: str) -> None:

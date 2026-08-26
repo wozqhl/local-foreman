@@ -2,6 +2,13 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.2.4] — 2026-08-26
+
+### Added
+
+- 硬上限 `LOCAL_FOREMAN_MAX_ASKS`：同一条 traj 上再问一次会超过上限时，跳过 ask，留在本地（空转或带原因 halt），绝不调用教练。未设置则不设上限。
+- Smoke 新 token：`max-ask-ok`。原有 token 保留，仍只走 mock。
+
 ## [0.2.3] — 2026-08-26
 
 ### Added

@@ -24,6 +24,8 @@
 - [x] `traj` CLI：人眼查看同一条 jsonl（`--last` / `--kind` / `--out`）
 - [x] 本机统计教练询问次数（同一条 jsonl；空转不计；可选 `COACH_USD_PER_ASK`）
 - [x] Smoke：`ask-cost-ok`
+- [x] 硬上限 `LOCAL_FOREMAN_MAX_ASKS`：超过则跳过 ask，留在本地，不调用教练
+- [x] Smoke：`max-ask-ok`
 
 ## 0.3 — Worker 更稳
 

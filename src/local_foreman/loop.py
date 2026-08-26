@@ -9,6 +9,8 @@ After apply, the worker MUST continue with the coach instruction in its
 system prompt.
 Coach usage is tallied from asked_coach / coach_instruction on this same
 jsonl. Idle thought / idle_act / retrieved do not increment the counter.
+LOCAL_FOREMAN_MAX_ASKS hard-caps asked_coach (unset = no cap). When the next
+ask would exceed the cap, skip coach, stay local (idle or halt).
 """
 
 from __future__ import annotations
@@ -45,6 +47,8 @@ from local_foreman.traj import (
     render_compacted,
     retrieve,
     utc_now,
+    coach_max_asks,
+    coach_stats,
 )
 from local_foreman.worker import WORKER_SYSTEM, Worker, WorkerAction, make_worker
 
@@ -58,6 +62,7 @@ RETRIEVED_CONTEXT_HEADER = "## Retrieved (raw jsonl, local)"
 ENV_PERSIST = "LOCAL_FOREMAN_PERSIST"
 ENV_IDLE_START = "LOCAL_FOREMAN_IDLE_START"
 ENV_IDLE_CAP = "LOCAL_FOREMAN_IDLE_CAP"
+ENV_MAX_ASKS = "LOCAL_FOREMAN_MAX_ASKS"
 
 DEFAULT_IDLE_START = 5.0
 DEFAULT_IDLE_CAP = 300.0
@@ -115,6 +120,7 @@ class ForemanLoop:
         idle_cap: Optional[float] = None,
         idle_max: Optional[int] = None,
         sleeper: Optional[Callable[[float], None]] = None,
+        max_asks: Optional[int] = None,
     ):
         self.worker = worker or make_worker()
         self.coach = coach or make_coach()
@@ -140,6 +146,10 @@ class ForemanLoop:
         if idle_cap is None:
             self.idle_cap = env_float(ENV_IDLE_CAP, self.idle_cap)
         self.idle_max = idle_max
+        if max_asks is None:
+            self.max_asks = coach_max_asks()
+        else:
+            self.max_asks = None if int(max_asks) < 0 else int(max_asks)
         self._sleep = sleeper or time.sleep
         self.traj: Optional[Trajectory] = None
         self._idle_interval = self.idle_start
@@ -332,6 +342,22 @@ class ForemanLoop:
             self.traj = None
             return
         self.traj = Trajectory(self.traj_path, goal=goal, cwd=self.root)
+
+    def _coach_ask_count(self, result: RunResult) -> int:
+        """asked_coach on this traj (disk) or this-run events if persist is off."""
+        entries = self.traj.entries if self.traj is not None else result.events
+        return int(coach_stats(entries).get("asks") or 0)
+
+    def _skip_ask_for_cap(self, result: RunResult) -> Optional[str]:
+        """If the next asked_coach would exceed the cap, return a halt reason."""
+        if self.max_asks is None:
+            return None
+        used = self._coach_ask_count(result)
+        if used + 1 <= self.max_asks:
+            return None
+        return (
+            f"max_asks: {ENV_MAX_ASKS}={self.max_asks} already used {used}"
+        )
 
     def _handle_act(
         self,
@@ -527,6 +553,23 @@ class ForemanLoop:
                 continue
 
             if state == State.ASK:
+                cap_reason = self._skip_ask_for_cap(result)
+                if cap_reason is not None:
+                    used = self._coach_ask_count(result)
+                    cap = self.max_asks
+                    self._emit(
+                        result,
+                        EVENT_THOUGHT,
+                        f"达到询问上限（已用 {used}/{cap}），不问教练，留在本地",
+                        state=State.IDLE.value if self.idle else state.value,
+                    )
+                    pending_action = None
+                    self._pending_problem = ""
+                    if self.idle:
+                        state = State.IDLE
+                        continue
+                    result.done_reason = cap_reason
+                    break
                 action = pending_action or WorkerAction(kind="unsure", thought="empty")
                 ticket = self._ticket(
                     goal, action, failed_logs, pending_reason, pending_risk

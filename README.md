@@ -100,7 +100,7 @@ local-foreman traj --out /tmp/traj.jsonl
 local-foreman traj --stats
 ```
 
-`--last N` 只看最近，`--kind` 按逗号过滤，`--out` 导出仍是同一份 jsonl。`--stats` 统计本文件上的教练询问 / 回复次数；空转想法不计次。只有设置了 `COACH_USD_PER_ASK` 才额外估算美元，默认只报次数。路径默认 `$LOCAL_FOREMAN_TRAJ` 或 `<cwd>/.local-foreman/traj.jsonl`。看板页也可下载同一文件，并显示同一份用量。
+`--last N` 只看最近，`--kind` 按逗号过滤，`--out` 导出仍是同一份 jsonl。`--stats` 统计本文件上的教练询问 / 回复次数；空转想法不计次。只有设置了 `COACH_USD_PER_ASK` 才额外估算美元，默认只报次数。`LOCAL_FOREMAN_MAX_ASKS` 是询问硬上限：再问一次会超过则跳过 ask，留在本地，不调用教练。路径默认 `$LOCAL_FOREMAN_TRAJ` 或 `<cwd>/.local-foreman/traj.jsonl`。看板页也可下载同一文件，并显示同一份用量。
 
 没有 Mac、或不想下载权重时，整条协议仍可用 mock 跑：
 
@@ -141,6 +141,7 @@ python3 -m pip install -e '.[mlx]'
 | `LOCAL_FOREMAN_IDLE_START` | 秒 | 空转起始间隔，默认 `5` |
 | `LOCAL_FOREMAN_IDLE_CAP` | 秒 | 空转间隔上限，默认 `300` |
 | `COACH_USD_PER_ASK` | 美元/次 | 可选。设置后 `traj --stats` 与看板才估算费用；未设置只计次数 |
+| `LOCAL_FOREMAN_MAX_ASKS` | 整数 | 可选。教练询问硬上限。再问一次会超过则跳过 ask，留在本地（空转或 halt），不调用教练。未设置不设上限 |
 
 CLI 的 `--worker` / `--coach` 会覆盖对应环境变量。`--smoke` 会强制两边都是 mock。
 
@@ -168,6 +169,7 @@ retrieve-ok
 idle-act-ok
 traj-cli-ok
 ask-cost-ok
+max-ask-ok
 ```
 
 含义：
@@ -185,6 +187,7 @@ ask-cost-ok
 11. `idle-act-ok` — 空转可触发本地安全 act，不打教练；远端写入仍走四条升级
 12. `traj-cli-ok` — `traj --last` 读同一条 jsonl，能打印 `thought` / `idle_act` / `retrieved`
 13. `ask-cost-ok` — mock ask/apply 后 `asks>=1`；仅空转的 persist 片段 `asks` 仍为 0
+14. `max-ask-ok` — `LOCAL_FOREMAN_MAX_ASKS=1` 时第一次 ask 会打教练，第二次升级跳过，不调用教练
 
 GitHub Actions（[`.github/workflows/smoke.yml`](.github/workflows/smoke.yml)）在 Ubuntu + Python 3.11 上只跑这一条 mock smoke。
 

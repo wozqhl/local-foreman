@@ -40,6 +40,7 @@ Local 干活。遇到问题先把问题说清楚，再问 Coach。Coach 只出�
 - 一次性 CLI 默认仍是任务驱动；`--persist` 或 `LOCAL_FOREMAN_PERSIST=1` 才写盘并空转。
 - `local-foreman traj` / `python -m local_foreman traj` 读同一条 jsonl：默认 cat，`--last N` 只看最近，`--kind thought,idle_act,retrieved` 过滤，`--out path` 导出。`--stats` 统计本文件上的 ask / 教练回复。不另起一份日志。
 - 教练用量只数 `asked_coach` 与 `coach_instruction`。空转想法不计次。`COACH_USD_PER_ASK` 未设置时只报次数，不估美元。
+- `LOCAL_FOREMAN_MAX_ASKS` 硬限制 `asked_coach` 次数。未设置则不设上限。再问一次会超过上限时，跳过 ask，留在本地（空转或带原因 halt），绝不调用教练。
 
 新的用户目标，或进入 `ask`，会把空转退避重置回起始间隔（约 5s，可配，加倍直到上限）。
 

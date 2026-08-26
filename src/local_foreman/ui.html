@@ -203,6 +203,9 @@ function paint(snap) {
       if (snap.estimated_usd !== undefined && snap.estimated_usd !== null) {
         text += " · 约 $" + snap.estimated_usd;
       }
+      if (snap.max_asks !== undefined && snap.max_asks !== null) {
+        text += " · 上限 " + snap.max_asks;
+      }
       usage.textContent = text;
       usage.className = "";
     }

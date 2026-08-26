@@ -7,6 +7,7 @@ can expand a summary back to the original lines.
 Coach usage is counted on this same file: asked_coach / coach_instruction.
 Idle thought / idle_act / retrieved never increment the tally. Estimated USD
 is optional and only appears when COACH_USD_PER_ASK is set.
+LOCAL_FOREMAN_MAX_ASKS hard-caps asked_coach (unset = no cap).
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ STATE_DIR_NAME = ".local-foreman"
 TRAJ_FILENAME = "traj.jsonl"
 ENV_TRAJ = "LOCAL_FOREMAN_TRAJ"
 ENV_USD_PER_ASK = "COACH_USD_PER_ASK"
+ENV_MAX_ASKS = "LOCAL_FOREMAN_MAX_ASKS"
 
 EVENT_WORK = "work"
 EVENT_STUCK = "stuck"
@@ -335,12 +337,27 @@ def coach_usd_per_ask() -> Optional[float]:
     return value
 
 
+def coach_max_asks() -> Optional[int]:
+    """Hard cap on asked_coach. Unset / invalid / negative -> no cap."""
+    raw = (os.environ.get(ENV_MAX_ASKS) or "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    if value < 0:
+        return None
+    return value
+
+
 def coach_stats(entries: list[dict[str, Any]]) -> dict[str, Any]:
     """Count ask / coach replies on this traj. Idle thoughts do not count.
 
     asks = asked_coach rows (a real consult). replies = coach_instruction
     rows. thought / idle_act / retrieved / work / stuck are ignored.
     estimated_usd is included only when COACH_USD_PER_ASK is set.
+    max_asks is included only when LOCAL_FOREMAN_MAX_ASKS is set.
     """
     asks = 0
     replies = 0
@@ -355,6 +372,9 @@ def coach_stats(entries: list[dict[str, Any]]) -> dict[str, Any]:
     if usd is not None:
         out["usd_per_ask"] = usd
         out["estimated_usd"] = round(asks * usd, 6)
+    cap = coach_max_asks()
+    if cap is not None:
+        out["max_asks"] = cap
     return out
 
 
@@ -368,5 +388,7 @@ def format_coach_stats(stats: dict[str, Any]) -> str:
         usd = stats["estimated_usd"]
         text = f"{float(usd):.6f}".rstrip("0").rstrip(".")
         lines.append(f"estimated_usd={text if text else '0'}")
+    if "max_asks" in stats:
+        lines.append(f"max_asks={int(stats['max_asks'])}")
     return "\n".join(lines)
 

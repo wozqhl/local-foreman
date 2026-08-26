@@ -4,6 +4,7 @@ One-shot stays task-driven unless --persist / LOCAL_FOREMAN_PERSIST=1.
 `ui` defaults persist+idle ON. Idle think never calls the coach.
 `traj` tails/cats/exports the same jsonl the loop writes.
 `traj --stats` tallies ask / coach replies on that file (idle thoughts do not count).
+LOCAL_FOREMAN_MAX_ASKS hard-caps asked_coach (unset = no cap).
 """
 
 from __future__ import annotations
@@ -141,7 +142,7 @@ def run_traj(argv=None) -> int:
     parser.add_argument(
         "--stats",
         action="store_true",
-        help="print ask / coach-reply tally for this jsonl (idle thoughts do not count)",
+        help="print ask / coach-reply tally for this jsonl (idle thoughts do not count; shows max_asks when LOCAL_FOREMAN_MAX_ASKS is set)",
     )
     args = parser.parse_args(argv)
 
@@ -793,6 +794,109 @@ def _smoke_ask_cost(root: Path, errors: list[str]) -> None:
     print("ask-cost-ok")
 
 
+def _smoke_max_asks(root: Path, errors: list[str]) -> None:
+    tmp = Path(tempfile.mkdtemp(prefix="lf-max-ask-"))
+    path = tmp / "traj.jsonl"
+    push_cmd = "git " + "push" + " origin HEAD"
+    worker = MockWorker(script=[
+        WorkerAction(kind="tool", tool="shell", args={"cmd": push_cmd}, thought="first remote"),
+        WorkerAction(kind="tool", tool="shell", args={"cmd": push_cmd}, thought="second remote"),
+        WorkerAction(kind="done", thought="should not need a third step"),
+    ])
+    coach = MockCoach(["continue", "continue"])
+    prev = os.environ.get("LOCAL_FOREMAN_MAX_ASKS")
+    os.environ["LOCAL_FOREMAN_MAX_ASKS"] = "1"
+    try:
+        loop = ForemanLoop(
+            worker=worker,
+            coach=coach,
+            root=root,
+            max_steps=12,
+            persist=True,
+            idle=False,
+            traj_path=path,
+        )
+        res = loop.run("smoke: max asks")
+    finally:
+        if prev is None:
+            os.environ.pop("LOCAL_FOREMAN_MAX_ASKS", None)
+        else:
+            os.environ["LOCAL_FOREMAN_MAX_ASKS"] = prev
+    if len(coach.calls) != 1:
+        errors.append("max-ask-ok: expected 1 coach call after first ask, got " + str(len(coach.calls)))
+        return
+    asked = [e for e in res.events if e.get("kind") == "asked_coach"]
+    if len(asked) != 1:
+        errors.append("max-ask-ok: expected 1 asked_coach got " + str([e.get("kind") for e in res.events]))
+        return
+    if not path.is_file():
+        errors.append("max-ask-ok: traj missing")
+        return
+    loaded = Trajectory(path)
+    stats = loaded.stats()
+    if int(stats.get("asks") or 0) != 1:
+        errors.append("max-ask-ok: traj asks=" + str(stats.get("asks")))
+        return
+    if not any(e.get("kind") == "stuck" for e in res.events):
+        errors.append("max-ask-ok: missing stuck before skip")
+        return
+    stuck = [e for e in res.events if e.get("kind") == "stuck"]
+    if len(stuck) < 2:
+        errors.append("max-ask-ok: second escalate did not mark stuck got=" + str([e.get("kind") for e in res.events]))
+        return
+    if not res.done_reason.startswith("max_asks"):
+        errors.append("max-ask-ok: expected halt reason max_asks got=" + res.done_reason)
+        return
+    if "apply" not in res.states:
+        errors.append("max-ask-ok: first ask never applied states=" + str(res.states))
+        return
+    if any("咨询" in str(e.get("message") or "") and e.get("kind") == "asked_coach" for e in res.events[res.events.index(asked[0])+1:]):
+        errors.append("max-ask-ok: later asked_coach after cap")
+        return
+
+    # Pre-existing traj asks already at the cap: first escalate stays local.
+    path2 = tmp / "seeded.jsonl"
+    seeded = Trajectory(path2, goal="seeded cap")
+    seeded.append({"kind": "asked_coach", "message": "prior ask"})
+    coach2 = MockCoach(["continue"])
+    worker2 = MockWorker(script=[
+        WorkerAction(kind="tool", tool="shell", args={"cmd": push_cmd}, thought="would ask"),
+        WorkerAction(kind="done", thought="no"),
+    ])
+    prev = os.environ.get("LOCAL_FOREMAN_MAX_ASKS")
+    os.environ["LOCAL_FOREMAN_MAX_ASKS"] = "1"
+    try:
+        loop2 = ForemanLoop(
+            worker=worker2,
+            coach=coach2,
+            root=root,
+            max_steps=10,
+            persist=True,
+            idle=True,
+            idle_start=0.0,
+            idle_cap=1.0,
+            idle_max=1,
+            traj_path=path2,
+            sleeper=lambda _s: None,
+        )
+        res2 = loop2.run("smoke: already at cap")
+    finally:
+        if prev is None:
+            os.environ.pop("LOCAL_FOREMAN_MAX_ASKS", None)
+        else:
+            os.environ["LOCAL_FOREMAN_MAX_ASKS"] = prev
+    if coach2.calls:
+        errors.append("max-ask-ok: seeded traj still called coach")
+        return
+    if any(e.get("kind") == "asked_coach" and e.get("message") != "prior ask" for e in res2.events):
+        errors.append("max-ask-ok: seeded run wrote a new asked_coach")
+        return
+    if "idle" not in res2.states and not res2.done_reason.startswith("max_asks"):
+        errors.append("max-ask-ok: seeded run did not stay local states=" + str(res2.states) + " done=" + res2.done_reason)
+        return
+    print("max-ask-ok")
+
+
 def run_smoke() -> int:
     root = Path(__file__).resolve().parents[2]
     errors = []
@@ -880,6 +984,7 @@ def run_smoke() -> int:
     _smoke_idle_act(root, errors)
     _smoke_traj_cli(errors)
     _smoke_ask_cost(root, errors)
+    _smoke_max_asks(root, errors)
 
     if errors:
         for e in errors:
