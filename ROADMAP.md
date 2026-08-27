@@ -13,7 +13,7 @@
 - [x] 把问题说清楚再问教练（`ticket.problem`）
 - [x] 本机看板：干活中 / 求助中（正在咨询大模型） / 已收到指示 / 继续
 
-## 0.2 — 持续在场（当前）
+## 0.2 — 持续在场
 
 - [x] 一条轨迹 jsonl，看板与循环共用
 - [x] 空转本地思考 + 指数退避（不问教练）
@@ -34,10 +34,10 @@
 - [x] EAGLE-2 滚动校准（P(accept|conf_bucket,act_type) 够样本才跳过 verify）
 - [x] Smoke：`calibrate-ok`
 
-## 0.3 — Worker 更稳
+## 0.3 — Worker 更稳（当前）
 
-- [ ] 把 Qwen3 thinking 块从输出里剥干净（即使模板没关）
-- [ ] 可配置 `max_tokens` / 采样
+- [x] 把 Qwen3 thinking 块从输出里剥干净（即使模板没关）
+- [x] 可配置 `max_tokens` / 采样
 - [ ] 模型加载进度与失败重试提示
 - [ ] 多轮 history 改成 chat turns，而不是整段 JSON
 

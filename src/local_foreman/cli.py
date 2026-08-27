@@ -1792,6 +1792,115 @@ def _smoke_calibrate(root: Path, errors: list[str]) -> None:
     print("calibrate-ok")
 
 
+def _smoke_think_strip(errors: list[str]) -> None:
+    from local_foreman.worker import (
+        DEFAULT_MAX_TOKENS,
+        ENV_MAX_TOKENS,
+        ENV_TEMP,
+        ENV_TOP_P,
+        MlxWorker,
+        make_worker,
+        parse_action,
+        strip_thinking,
+    )
+
+    n0 = len(errors)
+    nl = chr(10)
+    open_t = "<think>"
+    close_t = "</think>"
+    inner = "{\"kind\":\"unsure\",\"thought\":\"draft\"}"
+    tool = "{\"kind\":\"tool\",\"tool\":\"read\",\"args\":{\"path\":\"README.md\"},\"thought\":\"safe read\"}"
+    done = "{\"kind\":\"done\",\"thought\":\"ok\"}"
+    raw = open_t + nl + inner + nl + close_t + nl + tool
+    action = parse_action(raw)
+    if action.kind != "tool" or action.tool != "read":
+        errors.append("think-strip-ok: <think> fixture not parsed as tool kind=" + action.kind)
+    elif (action.args or {}).get("path") != "README.md":
+        errors.append("think-strip-ok: tool args " + str(action.args))
+
+    cn = open_t + nl + "用户要读 README，草稿 " + inner + nl + close_t + nl + tool
+    cn_act = parse_action(cn)
+    if cn_act.kind != "tool" or cn_act.tool != "read":
+        errors.append("think-strip-ok: chinese think block kind=" + cn_act.kind)
+
+    thinking = "<thinking>" + inner + "</thinking>" + nl + done
+    th_act = parse_action(thinking)
+    if th_act.kind != "done":
+        errors.append("think-strip-ok: <thinking> kind=" + th_act.kind)
+
+    redacted = "<redacted_reasoning>" + inner + "</redacted_reasoning>" + nl + done
+    rd_act = parse_action(redacted)
+    if rd_act.kind != "done":
+        errors.append("think-strip-ok: redacted_reasoning kind=" + rd_act.kind)
+
+    dangling = "plan " + inner + nl + close_t + nl + tool
+    dg_act = parse_action(dangling)
+    if dg_act.kind != "tool" or dg_act.tool != "read":
+        errors.append("think-strip-ok: dangling </think> kind=" + dg_act.kind)
+
+    fenced = open_t + "x" + close_t + nl + "```json" + nl + done + nl + "```"
+    fc_act = parse_action(fenced)
+    if fc_act.kind != "done":
+        errors.append("think-strip-ok: json fence after think kind=" + fc_act.kind)
+
+    if strip_thinking(tool) != tool:
+        errors.append("think-strip-ok: strip_thinking changed plain JSON")
+    bad = parse_action(open_t + "no json here" + close_t + " hello")
+    if bad.kind != "unsure":
+        errors.append("think-strip-ok: expected unsure fallback kind=" + bad.kind)
+
+    prev_max = os.environ.get(ENV_MAX_TOKENS)
+    prev_temp = os.environ.get(ENV_TEMP)
+    prev_top = os.environ.get(ENV_TOP_P)
+    prev_worker = os.environ.get("LOCAL_FOREMAN_WORKER")
+    try:
+        os.environ.pop(ENV_MAX_TOKENS, None)
+        os.environ.pop(ENV_TEMP, None)
+        os.environ.pop(ENV_TOP_P, None)
+        default_w = MlxWorker()
+        if default_w.max_tokens != DEFAULT_MAX_TOKENS:
+            errors.append("think-strip-ok: default max_tokens=" + str(default_w.max_tokens))
+        if default_w.temp is not None or default_w.top_p is not None:
+            errors.append("think-strip-ok: default sampler should be unset")
+        os.environ[ENV_MAX_TOKENS] = "128"
+        os.environ[ENV_TEMP] = "0.2"
+        os.environ[ENV_TOP_P] = "0.9"
+        env_w = MlxWorker()
+        if env_w.max_tokens != 128:
+            errors.append("think-strip-ok: env max_tokens=" + str(env_w.max_tokens))
+        if env_w.temp != 0.2 or env_w.top_p != 0.9:
+            errors.append("think-strip-ok: env sampler temp/top_p not passed through")
+        explicit = MlxWorker(max_tokens=64, temp=0.1)
+        if explicit.max_tokens != 64 or explicit.temp != 0.1:
+            errors.append("think-strip-ok: explicit max_tokens/temp ignored")
+        os.environ["LOCAL_FOREMAN_WORKER"] = "mlx"
+        factory = make_worker()
+        if type(factory).__name__ != "MlxWorker":
+            errors.append("think-strip-ok: factory backend not MlxWorker")
+        elif getattr(factory, "max_tokens", None) != 128:
+            errors.append("think-strip-ok: factory max_tokens=" + str(getattr(factory, "max_tokens", None)))
+    finally:
+        if prev_max is None:
+            os.environ.pop(ENV_MAX_TOKENS, None)
+        else:
+            os.environ[ENV_MAX_TOKENS] = prev_max
+        if prev_temp is None:
+            os.environ.pop(ENV_TEMP, None)
+        else:
+            os.environ[ENV_TEMP] = prev_temp
+        if prev_top is None:
+            os.environ.pop(ENV_TOP_P, None)
+        else:
+            os.environ[ENV_TOP_P] = prev_top
+        if prev_worker is None:
+            os.environ.pop("LOCAL_FOREMAN_WORKER", None)
+        else:
+            os.environ["LOCAL_FOREMAN_WORKER"] = prev_worker
+
+    if len(errors) == n0:
+        print("think-strip-ok")
+
+
 def run_smoke() -> int:
     root = Path(__file__).resolve().parents[2]
     errors = []
@@ -1885,6 +1994,7 @@ def run_smoke() -> int:
     _smoke_self_verify(root, errors)
     _smoke_demo(root, errors)
     _smoke_calibrate(root, errors)
+    _smoke_think_strip(errors)
 
     if errors:
         for e in errors:
@@ -1923,6 +2033,12 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--max-steps", type=int, default=12, metavar="N")
     parser.add_argument(
+        "--max-tokens",
+        type=int,
+        metavar="N",
+        help="MLX generate max_tokens (default: $LOCAL_FOREMAN_MAX_TOKENS or 512)",
+    )
+    parser.add_argument(
         "--persist",
         action="store_true",
         help="write traj jsonl and idle-think (or set LOCAL_FOREMAN_PERSIST=1)",
@@ -1935,6 +2051,8 @@ def main(argv=None) -> int:
         os.environ["LOCAL_FOREMAN_COACH"] = args.coach
     if args.persist:
         os.environ["LOCAL_FOREMAN_PERSIST"] = "1"
+    if args.max_tokens is not None:
+        os.environ["LOCAL_FOREMAN_MAX_TOKENS"] = str(args.max_tokens)
 
     if args.smoke:
         os.environ["LOCAL_FOREMAN_WORKER"] = "mock"

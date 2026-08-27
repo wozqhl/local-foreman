@@ -147,6 +147,9 @@ python3 -m pip install -e '.[mlx]'
 | `LOCAL_FOREMAN_WORKER` | `mock` \| `mlx` | Worker 后端。Linux / smoke 用 `mock` |
 | `LOCAL_FOREMAN_COACH` | `mock` \| `openai` | 教练后端。smoke 用 `mock` |
 | `LOCAL_FOREMAN_MLX_MODEL` | HF id | 默认 `mlx-community/Qwen3-8B-4bit` |
+| `LOCAL_FOREMAN_MAX_TOKENS` | 整数 | 可选。MLX `generate` 长度，默认 512 |
+| `LOCAL_FOREMAN_TEMP` | 浮点 | 可选。设置后传 mlx-lm sampler；未设置保持 generate 默认 |
+| `LOCAL_FOREMAN_TOP_P` | 浮点 | 可选。设置后传 mlx-lm sampler；未设置保持 generate 默认 |
 | `COACH_BASE_URL` | URL | 任意 OpenAI 兼容根路径，默认 `https://api.openai.com/v1` |
 | `COACH_API_KEY` | secret | 教练 API key；smoke 不需要 |
 | `COACH_MODEL` | 模型名 | 默认 `gpt-4o` |
@@ -162,7 +165,7 @@ python3 -m pip install -e '.[mlx]'
 | `LOCAL_FOREMAN_MAX_VERIFIES` | 整数 | 可选。核对硬上限。再核一次会超过则跳过 verify，留在本地。未设置不设上限 |
 | `LOCAL_FOREMAN_DEMOS` | 路径 | 可选。EcoAssistant demo 缓存 jsonl。默认 `<cwd>/.local-foreman/demos.jsonl`。只存本地 compact demo，不存教练改写 |
 
-CLI 的 `--worker` / `--coach` 会覆盖对应环境变量。`--smoke` 会强制两边都是 mock。
+CLI 的 `--worker` / `--coach` 会覆盖对应环境变量；`--max-tokens` 写入 `LOCAL_FOREMAN_MAX_TOKENS`。`--smoke` 会强制两边都是 mock。
 
 ## Smoke
 
@@ -194,6 +197,7 @@ bench-ok
 self-verify-ok
 demo-ok
 calibrate-ok
+think-strip-ok
 ```
 
 含义：
@@ -217,6 +221,7 @@ calibrate-ok
 17. `self-verify-ok` — 本地自核：高 p + CRITIC 留在 LOW；p 很低两次且非升级不打教练；真升级仍走 ask
 18. `demo-ok` — verify accept 后本地缓存 demo，相似 write 注入 worker；revise / ask / 教练改写不入库
 19. `calibrate-ok` — 同一条 traj 上滚动校准 P(accept|conf_bucket,act_type)；够样本且 P 高则跳过 verify；分歧不另造 HIGH；样本不足仍走 DSP / tax
+20. `think-strip-ok` — 带 `<think>` 的夹具经 `parse_action` 得到 tool 而不是 unsure；`LOCAL_FOREMAN_MAX_TOKENS` 读入 MlxWorker / factory（不 load）
 
 GitHub Actions（[`.github/workflows/smoke.yml`](.github/workflows/smoke.yml)）在 Ubuntu + Python 3.11 上只跑这一条 mock smoke。
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Optional, Protocol
 
@@ -24,8 +25,23 @@ local writes, never coach rewrites.
 """
 
 DEFAULT_MLX_MODEL = "mlx-community/Qwen3-8B-4bit"
+DEFAULT_MAX_TOKENS = 512
+ENV_MAX_TOKENS = "LOCAL_FOREMAN_MAX_TOKENS"
+ENV_TEMP = "LOCAL_FOREMAN_TEMP"
+ENV_TOP_P = "LOCAL_FOREMAN_TOP_P"
 
 ACTION_KINDS = {"tool", "done", "unsure", "thought"}
+
+# Qwen3 official thinking fences (docs: <think>...</think>).
+# Qwen3-thinking chat templates often inject the opener, so output may
+# only contain </think>. Also strip <thinking> and <redacted_reasoning>.
+_THINK_TAG = r"(?:think|thinking|redacted_reasoning)"
+_THINK_PAIR_RE = re.compile(
+    rf"<{_THINK_TAG}>\s*.*?</{_THINK_TAG}>",
+    re.IGNORECASE | re.DOTALL,
+)
+_THINK_CLOSE_RE = re.compile(rf"</{_THINK_TAG}>", re.IGNORECASE)
+_THINK_OPEN_RE = re.compile(rf"^<{_THINK_TAG}>\s*", re.IGNORECASE)
 
 
 @dataclass
@@ -74,6 +90,63 @@ class Worker(Protocol):
         ...
 
 
+def resolve_max_tokens(explicit: Optional[int] = None) -> int:
+    """MLX generate length. explicit, else LOCAL_FOREMAN_MAX_TOKENS, else 512."""
+    if explicit is not None:
+        try:
+            n = int(explicit)
+            if n >= 1:
+                return n
+        except (TypeError, ValueError):
+            pass
+    raw = (os.environ.get(ENV_MAX_TOKENS) or "").strip()
+    if raw:
+        try:
+            n = int(raw)
+            if n >= 1:
+                return n
+        except ValueError:
+            pass
+    return DEFAULT_MAX_TOKENS
+
+
+def resolve_optional_float(name: str, explicit: Optional[float] = None) -> Optional[float]:
+    """Sampling knob. Unset / invalid -> None (do not pass a sampler)."""
+    if explicit is not None:
+        try:
+            return float(explicit)
+        except (TypeError, ValueError):
+            pass
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        return None
+
+
+def strip_thinking(raw: str) -> str:
+    """Remove Qwen3 thinking wrappers. Does not invent replacement text.
+
+    Official Qwen3 uses <think>...</think>. Hybrid/thinking templates may
+    leave only a dangling </think> (rindex, same as Qwen parser).
+    JSON after the last close tag is kept; fences around JSON are left
+    for extract_json_object.
+    """
+    text = raw if isinstance(raw, str) else ("" if raw is None else str(raw))
+    if not text:
+        return ""
+    cleaned = _THINK_PAIR_RE.sub("", text)
+    last = None
+    for match in _THINK_CLOSE_RE.finditer(cleaned):
+        last = match
+    if last is not None:
+        cleaned = cleaned[last.end() :]
+    cleaned = _THINK_OPEN_RE.sub("", cleaned.lstrip())
+    return cleaned.strip()
+
+
 def extract_json_object(raw: str) -> Optional[dict[str, Any]]:
     """Pull the first JSON object out of messy model or API text."""
     text = (raw or "").strip()
@@ -92,9 +165,10 @@ def extract_json_object(raw: str) -> Optional[dict[str, Any]]:
 
 
 def parse_action(raw: str) -> WorkerAction:
-    data = extract_json_object(raw)
+    cleaned = strip_thinking(raw)
+    data = extract_json_object(cleaned)
     if data is None:
-        text = (raw or "").strip()
+        text = (cleaned or raw or "").strip()
         return WorkerAction(kind="unsure", thought=(text[:200] or "unparseable"))
     kind = str(data.get("kind") or "unsure")
     if kind not in ACTION_KINDS:
@@ -180,13 +254,21 @@ class MlxWorker:
 
     DEFAULT_MODEL = DEFAULT_MLX_MODEL
 
-    def __init__(self, model_id: Optional[str] = None, max_tokens: int = 512):
+    def __init__(
+        self,
+        model_id: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        temp: Optional[float] = None,
+        top_p: Optional[float] = None,
+    ):
         self.model_id = (
             model_id
             or os.environ.get("LOCAL_FOREMAN_MLX_MODEL")
             or self.DEFAULT_MODEL
         )
-        self.max_tokens = max_tokens
+        self.max_tokens = resolve_max_tokens(max_tokens)
+        self.temp = resolve_optional_float(ENV_TEMP, temp)
+        self.top_p = resolve_optional_float(ENV_TOP_P, top_p)
         self._model = None
         self._tokenizer = None
         self._generate = None
@@ -243,16 +325,41 @@ class MlxWorker:
                 pass
         return system + "\n\n" + user + "\n\nJSON action:"
 
-    def _call_generate(self, prompt: str) -> str:
+    def _sampler(self):
+        """Build mlx-lm sampler only when temp/top_p are set. Else None."""
+        if self.temp is None and self.top_p is None:
+            return None
         try:
-            raw = self._generate(
-                self._model,
-                self._tokenizer,
-                prompt=prompt,
-                max_tokens=self.max_tokens,
-            )
+            from mlx_lm.sample_utils import make_sampler  # type: ignore
+        except ImportError:
+            return None
+        kwargs: dict[str, Any] = {}
+        if self.temp is not None:
+            kwargs["temp"] = float(self.temp)
+        if self.top_p is not None:
+            kwargs["top_p"] = float(self.top_p)
+        return make_sampler(**kwargs)
+
+    def _call_generate(self, prompt: str) -> str:
+        kwargs: dict[str, Any] = {
+            "prompt": prompt,
+            "max_tokens": self.max_tokens,
+        }
+        sampler = self._sampler()
+        if sampler is not None:
+            kwargs["sampler"] = sampler
+        try:
+            raw = self._generate(self._model, self._tokenizer, **kwargs)
         except TypeError:
-            raw = self._generate(self._model, self._tokenizer, prompt)
+            try:
+                raw = self._generate(
+                    self._model,
+                    self._tokenizer,
+                    prompt=prompt,
+                    max_tokens=self.max_tokens,
+                )
+            except TypeError:
+                raw = self._generate(self._model, self._tokenizer, prompt)
         return raw if isinstance(raw, str) else str(raw)
 
     def step(self, *, goal: str, system: str, history: list[dict]) -> WorkerAction:

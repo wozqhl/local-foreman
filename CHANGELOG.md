@@ -2,6 +2,14 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.2.8] — 2026-08-27
+
+### Added
+
+- `strip_thinking`: 剥掉 Qwen3 `<think>` / `<thinking>` / `<redacted_reasoning>` 块（含模板只留下的 `</think>`），再交给 `parse_action`。不编造内容；剥完仍不是 JSON 就走原来的 unsure。mock 与 MLX 共用。
+- 可配置 MLX `max_tokens` / 采样：`LOCAL_FOREMAN_MAX_TOKENS`（默认 512）、可选 `LOCAL_FOREMAN_TEMP` / `LOCAL_FOREMAN_TOP_P`（未设置不传 sampler，保持原 generate 行为）、CLI `--max-tokens`。
+- Smoke：`think-strip-ok`（mock only；含 thinking 夹具解析，以及 env 读入 MlxWorker / factory，不 `load`、不打教练）。原有 token 保留。不宣称三项目标已达成。
+
 ## [0.2.7] — 2026-08-26
 
 ### Added

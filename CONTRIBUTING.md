@@ -42,6 +42,7 @@ bench-ok
 self-verify-ok
 demo-ok
 calibrate-ok
+think-strip-ok
 ```
 
 请不要在 PR 里加入会触发 `mlx_lm.load` 或 `OpenAICoach.advise` 的测试。
