@@ -2,6 +2,13 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.2.9] — 2026-08-28
+
+### Changed
+
+- MLX / fallback 多轮上下文改成 chat turns：`history_to_chat_turns` + `build_chat_messages` 把 loop 的 `action`/`result` 与 traj 的 kind/message 拆成 assistant/user，再交给 `apply_chat_template`（无模板时用带角色标记的纯文本）。不再把整段 history `json.dumps` 塞进一条 user。不 load 权重、不打教练。
+- Smoke：`chat-turns-ok`。原有 token 保留。不宣称三项目标已达成。
+
 ## [0.2.8] — 2026-08-27
 
 ### Added

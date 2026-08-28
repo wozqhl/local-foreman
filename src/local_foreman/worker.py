@@ -245,6 +245,116 @@ class MockWorker:
         )
 
 
+# Traj / loop kinds that originated from the local worker (assistant turns).
+_ASSISTANT_HISTORY_KINDS = frozenset(
+    {
+        "thought",
+        "work",
+        "idle_act",
+        "self_verify",
+        "demo",
+        "resumed",
+        "lesson",
+    }
+)
+
+
+def history_to_chat_turns(
+    history: list[dict],
+    *,
+    limit: int = 8,
+) -> list[dict[str, str]]:
+    """Map loop / traj history into chat turns for apply_chat_template.
+
+    Does not invent content — only reformats fields already on the entry.
+    Non-persist rows use action -> assistant, result -> user.
+    Persist traj rows: worker-origin kinds -> assistant; coach / env -> user.
+    """
+    if not history:
+        return []
+    recent = [h for h in history[-limit:] if isinstance(h, dict)]
+    turns: list[dict[str, str]] = []
+    for item in recent:
+        if "action" in item or ("result" in item and "kind" not in item and "message" not in item):
+            action = str(item.get("action") or "").strip()
+            result = str(item.get("result") or "").strip()
+            if action:
+                turns.append({"role": "assistant", "content": action})
+            if result:
+                turns.append({"role": "user", "content": "Observation: " + result})
+            continue
+        kind = str(item.get("kind") or item.get("role") or "event").strip() or "event"
+        msg = str(item.get("message") or "").strip()
+        obs = str(item.get("observation") or "").strip()
+        instruction = str(item.get("instruction") or "").strip()
+        if kind in _ASSISTANT_HISTORY_KINDS:
+            content = msg or kind
+            turns.append({"role": "assistant", "content": content})
+            if obs:
+                turns.append({"role": "user", "content": "Observation: " + obs})
+            continue
+        parts: list[str] = []
+        if msg:
+            parts.append(msg)
+        if instruction and kind in (
+            "coach_instruction",
+            "coach_verdict",
+            "asked_coach",
+        ):
+            parts.append("instruction: " + instruction)
+        if obs:
+            parts.append("Observation: " + obs)
+        body = "\n".join(parts) if parts else kind
+        turns.append({"role": "user", "content": f"[{kind}] {body}"})
+    return turns
+
+
+def build_chat_messages(
+    *,
+    goal: str,
+    system: str,
+    history: list[dict],
+    idle: bool = False,
+    limit: int = 8,
+) -> list[dict[str, str]]:
+    """Full chat message list: system, goal, history turns, final user nudge."""
+    messages: list[dict[str, str]] = [{"role": "system", "content": system}]
+    messages.append({"role": "user", "content": "Goal: " + goal})
+    messages.extend(history_to_chat_turns(history, limit=limit))
+    if idle:
+        nudge = (
+            "Idle local think. Reply with one short JSON "
+            '{"kind":"thought","thought":"..."} or a tool action. Do not ask the coach.'
+        )
+    else:
+        nudge = "Reply with one JSON action now."
+    if messages and messages[-1]["role"] == "user":
+        prev = messages[-1]["content"]
+        messages[-1] = {
+            "role": "user",
+            "content": prev + "\n\n" + nudge if prev else nudge,
+        }
+    else:
+        messages.append({"role": "user", "content": nudge})
+    return messages
+
+
+def format_messages_fallback(messages: list[dict[str, str]]) -> str:
+    """Plain-text prompt when no chat_template is available."""
+    chunks: list[str] = []
+    for m in messages:
+        role = m.get("role") or "user"
+        content = m.get("content") or ""
+        if role == "system":
+            chunks.append(content)
+        elif role == "assistant":
+            chunks.append("Assistant:\n" + content)
+        else:
+            chunks.append("User:\n" + content)
+    chunks.append("JSON action:")
+    return "\n\n".join(chunks)
+
+
 class MlxWorker:
     """Apple Silicon worker. Loads mlx-lm once; import is deferred until first step.
 
@@ -290,23 +400,9 @@ class MlxWorker:
         self._generate = generate
 
     def _prompt(self, *, goal: str, system: str, history: list[dict], idle: bool = False) -> str:
-        user_parts = ["Goal: " + goal]
-        if history:
-            user_parts.append(
-                "Recent history:\n" + json.dumps(history[-8:], ensure_ascii=False)
-            )
-        if idle:
-            user_parts.append(
-                "Idle local think. Reply with one short JSON "
-                '{"kind":"thought","thought":"..."} or a tool action. Do not ask the coach.'
-            )
-        else:
-            user_parts.append("Reply with one JSON action now.")
-        user = "\n\n".join(user_parts)
-        messages = [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ]
+        messages = build_chat_messages(
+            goal=goal, system=system, history=history, idle=idle
+        )
         tok = self._tokenizer
         if (
             tok is not None
@@ -323,7 +419,7 @@ class MlxWorker:
                     pass
             except Exception:
                 pass
-        return system + "\n\n" + user + "\n\nJSON action:"
+        return format_messages_fallback(messages)
 
     def _sampler(self):
         """Build mlx-lm sampler only when temp/top_p are set. Else None."""

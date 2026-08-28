@@ -38,8 +38,9 @@
 
 - [x] 把 Qwen3 thinking 块从输出里剥干净（即使模板没关）
 - [x] 可配置 `max_tokens` / 采样
+- [x] Smoke：`chat-turns-ok`
 - [ ] 模型加载进度与失败重试提示
-- [ ] 多轮 history 改成 chat turns，而不是整段 JSON
+- [x] 多轮 history 改成 chat turns，而不是整段 JSON
 
 ## 0.4 — 工具与守卫
 

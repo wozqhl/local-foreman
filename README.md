@@ -222,6 +222,7 @@ think-strip-ok
 18. `demo-ok` — verify accept 后本地缓存 demo，相似 write 注入 worker；revise / ask / 教练改写不入库
 19. `calibrate-ok` — 同一条 traj 上滚动校准 P(accept|conf_bucket,act_type)；够样本且 P 高则跳过 verify；分歧不另造 HIGH；样本不足仍走 DSP / tax
 20. `think-strip-ok` — 带 `<think>` 的夹具经 `parse_action` 得到 tool 而不是 unsure；`LOCAL_FOREMAN_MAX_TOKENS` 读入 MlxWorker / factory（不 load）
+21. `chat-turns-ok` — history 拆成 assistant/user chat turns（非 JSON dump）；不 load、不打教练
 
 GitHub Actions（[`.github/workflows/smoke.yml`](.github/workflows/smoke.yml)）在 Ubuntu + Python 3.11 上只跑这一条 mock smoke。
 

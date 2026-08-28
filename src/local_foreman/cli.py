@@ -1792,6 +1792,102 @@ def _smoke_calibrate(root: Path, errors: list[str]) -> None:
     print("calibrate-ok")
 
 
+
+def _smoke_chat_turns(errors: list[str]) -> None:
+    from local_foreman.worker import (
+        MlxWorker,
+        WORKER_SYSTEM,
+        build_chat_messages,
+        format_messages_fallback,
+        history_to_chat_turns,
+    )
+
+    n0 = len(errors)
+    # Non-persist action/result pairs become assistant then user turns.
+    hist = [
+        {"action": "read {'path': 'README.md'}", "result": "ok: 10 lines"},
+        {"action": "write {'path': 'out.txt'}", "result": "ok: wrote 4 bytes"},
+    ]
+    turns = history_to_chat_turns(hist)
+    if len(turns) != 4:
+        errors.append("chat-turns-ok: expected 4 turns got " + str(len(turns)))
+    elif turns[0].get("role") != "assistant" or "read" not in turns[0].get("content", ""):
+        errors.append("chat-turns-ok: first turn not assistant read")
+    elif turns[1].get("role") != "user" or "Observation:" not in turns[1].get("content", ""):
+        errors.append("chat-turns-ok: second turn not Observation user")
+    elif turns[2].get("role") != "assistant":
+        errors.append("chat-turns-ok: third turn not assistant")
+
+    # Persist traj kinds: worker -> assistant, coach -> user.
+    traj = [
+        {"kind": "thought", "message": "empty idle note"},
+        {"kind": "work", "message": "read README.md", "observation": "ok"},
+        {
+            "kind": "coach_instruction",
+            "message": "coach said continue",
+            "instruction": "continue",
+        },
+        {"kind": "summary", "message": "summarized 3 events", "role": "summary"},
+    ]
+    t2 = history_to_chat_turns(traj)
+    if not t2 or t2[0].get("role") != "assistant":
+        errors.append("chat-turns-ok: traj thought not assistant")
+    # work has observation -> assistant then user
+    work_idx = next((i for i, t in enumerate(t2) if t.get("role") == "assistant" and "read README" in t.get("content", "")), None)
+    if work_idx is None:
+        errors.append("chat-turns-ok: work message missing")
+    elif work_idx + 1 >= len(t2) or t2[work_idx + 1].get("role") != "user":
+        errors.append("chat-turns-ok: work observation not user turn")
+    coach = [t for t in t2 if t.get("role") == "user" and "[coach_instruction]" in t.get("content", "")]
+    if not coach:
+        errors.append("chat-turns-ok: coach_instruction not user turn")
+    summ = [t for t in t2 if t.get("role") == "user" and "[summary]" in t.get("content", "")]
+    if not summ:
+        errors.append("chat-turns-ok: summary not user turn")
+
+    msgs = build_chat_messages(
+        goal="smoke goal",
+        system=WORKER_SYSTEM,
+        history=hist,
+        idle=False,
+    )
+    if not msgs or msgs[0].get("role") != "system":
+        errors.append("chat-turns-ok: missing system message")
+    elif msgs[1].get("role") != "user" or "Goal: smoke goal" not in msgs[1].get("content", ""):
+        errors.append("chat-turns-ok: goal user message missing")
+    elif msgs[-1].get("role") != "user" or "JSON action" not in msgs[-1].get("content", ""):
+        errors.append("chat-turns-ok: final nudge missing")
+    # Must NOT embed raw json.dumps of the whole history list.
+    blob = format_messages_fallback(msgs)
+    if '"action":' in blob and "Recent history" in blob:
+        errors.append("chat-turns-ok: still dumping Recent history JSON")
+    if "Assistant:\n" not in blob and "Assistant:\nread" not in blob:
+        if "Assistant:" not in blob:
+            errors.append("chat-turns-ok: fallback missing Assistant turns")
+
+    # MlxWorker._prompt uses chat turns without loading weights.
+    w = MlxWorker()
+    prompt = w._prompt(goal="g", system="sys", history=hist, idle=False)
+    if "Recent history" in prompt and '"action":' in prompt:
+        errors.append("chat-turns-ok: MlxWorker still JSON-dumps history")
+    if "Assistant:" not in prompt and "read" not in prompt:
+        errors.append("chat-turns-ok: MlxWorker prompt missing history turns")
+    idle_msgs = build_chat_messages(goal="g", system="sys", history=[], idle=True)
+    if "Idle local think" not in idle_msgs[-1].get("content", ""):
+        errors.append("chat-turns-ok: idle nudge missing")
+
+    # limit keeps last N history rows (each row may expand to 2 turns).
+    long_hist = [{"action": f"a{i}", "result": f"r{i}"} for i in range(12)]
+    limited = history_to_chat_turns(long_hist, limit=2)
+    if len(limited) != 4:
+        errors.append("chat-turns-ok: limit=2 should yield 4 turns got " + str(len(limited)))
+    elif "a10" not in limited[0].get("content", ""):
+        errors.append("chat-turns-ok: limit did not keep last rows")
+
+    if len(errors) == n0:
+        print("chat-turns-ok")
+
+
 def _smoke_think_strip(errors: list[str]) -> None:
     from local_foreman.worker import (
         DEFAULT_MAX_TOKENS,
@@ -1995,6 +2091,7 @@ def run_smoke() -> int:
     _smoke_demo(root, errors)
     _smoke_calibrate(root, errors)
     _smoke_think_strip(errors)
+    _smoke_chat_turns(errors)
 
     if errors:
         for e in errors:
