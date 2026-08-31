@@ -1,7 +1,7 @@
 """Local live board: stdlib HTTP + SSE on 127.0.0.1:8765.
 
 Chinese status: 干活中 / 核对中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 /
-空转中 / 自己在想 / 展开原文 / 空转动手.
+空转中 / 自己在想 / 展开原文 / 空转动手 / 加载中 / 重试加载.
 Mock demo needs no keys: read → fake escalate → apply continue.
 UI defaults persist+idle ON so the board grows a mind log. Idle never
 asks the coach. retrieved / idle_act share the same SSE traj.
@@ -34,6 +34,8 @@ STATE_LABELS = {
     "ask": "求助中（正在咨询大模型）",
     "apply": "已收到指示",
     "idle": "空转中",
+    "加载中": "加载中",
+    "重试加载": "重试加载",
 }
 EVENT_LABELS = {
     "work": "干活中",
@@ -54,6 +56,9 @@ EVENT_LABELS = {
 
 def state_label(state: str, last_kind: str = "") -> str:
     # Idle is local. Never reuse the coach-consult copy.
+    # MLX weight load is local progress, never a coach ask.
+    if state in ("加载中", "重试加载"):
+        return state
     if last_kind == "thought":
         return "自己在想"
     if last_kind == "idle_act":

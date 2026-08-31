@@ -136,7 +136,7 @@ python3 -m pip install 'local-foreman[mlx]'
 python3 -m pip install -e '.[mlx]'
 ```
 
-这会装上 `mlx-lm`。第一次用 `MlxWorker` 时才会 `load(LOCAL_FOREMAN_MLX_MODEL)`；若本地没有缓存，`mlx-lm` 可能自行拉取 `mlx-community/Qwen3-8B-4bit`。请先自己准备好权重，**不要在 smoke 或 CI 里触发下载**。
+这会装上 `mlx-lm`。第一次用 `MlxWorker` 时才会 `load(LOCAL_FOREMAN_MLX_MODEL)`；若本地没有缓存，`mlx-lm` 可能自行拉取 `mlx-community/Qwen3-8B-4bit`。请先自己准备好权重，**不要在 smoke 或 CI 里触发下载**。首次加载会在 stderr / 看板打印中文进度，并对网络类失败按 `LOCAL_FOREMAN_LOAD_RETRIES` 重试（不是求助教练）。
 
 缺包时的错误会明确告诉你：在 Apple Silicon 上执行 `pip install 'local-foreman[mlx]'`。
 
@@ -150,6 +150,8 @@ python3 -m pip install -e '.[mlx]'
 | `LOCAL_FOREMAN_MAX_TOKENS` | 整数 | 可选。MLX `generate` 长度，默认 512 |
 | `LOCAL_FOREMAN_TEMP` | 浮点 | 可选。设置后传 mlx-lm sampler；未设置保持 generate 默认 |
 | `LOCAL_FOREMAN_TOP_P` | 浮点 | 可选。设置后传 mlx-lm sampler；未设置保持 generate 默认 |
+| `LOCAL_FOREMAN_LOAD_RETRIES` | 整数 | 可选。MLX `load` 重试次数，默认 3（最小 1） |
+| `LOCAL_FOREMAN_LOAD_RETRY_SLEEP` | 秒 | 可选。两次 load 之间的等待，默认 1；smoke 置 0 |
 | `COACH_BASE_URL` | URL | 任意 OpenAI 兼容根路径，默认 `https://api.openai.com/v1` |
 | `COACH_API_KEY` | secret | 教练 API key；smoke 不需要 |
 | `COACH_MODEL` | 模型名 | 默认 `gpt-4o` |
@@ -198,6 +200,8 @@ self-verify-ok
 demo-ok
 calibrate-ok
 think-strip-ok
+chat-turns-ok
+load-retry-ok
 ```
 
 含义：
@@ -223,6 +227,7 @@ think-strip-ok
 19. `calibrate-ok` — 同一条 traj 上滚动校准 P(accept|conf_bucket,act_type)；够样本且 P 高则跳过 verify；分歧不另造 HIGH；样本不足仍走 DSP / tax
 20. `think-strip-ok` — 带 `<think>` 的夹具经 `parse_action` 得到 tool 而不是 unsure；`LOCAL_FOREMAN_MAX_TOKENS` 读入 MlxWorker / factory（不 load）
 21. `chat-turns-ok` — history 拆成 assistant/user chat turns（非 JSON dump）；不 load、不打教练
+22. `load-retry-ok` — 注入假 loader：失败两次后成功 / 始终失败 / ImportError 提示；不 load 权重、不打教练
 
 GitHub Actions（[`.github/workflows/smoke.yml`](.github/workflows/smoke.yml)）在 Ubuntu + Python 3.11 上只跑这一条 mock smoke。
 

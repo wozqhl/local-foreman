@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
+import time
 from dataclasses import dataclass, field, replace
-from typing import Any, Optional, Protocol
+from typing import Any, Callable, Optional, Protocol
+from urllib.error import URLError
 
 WORKER_SYSTEM = """You are the local worker. You do the work. The coach only guides.
 Reply with one JSON object, no markdown:
@@ -29,6 +32,39 @@ DEFAULT_MAX_TOKENS = 512
 ENV_MAX_TOKENS = "LOCAL_FOREMAN_MAX_TOKENS"
 ENV_TEMP = "LOCAL_FOREMAN_TEMP"
 ENV_TOP_P = "LOCAL_FOREMAN_TOP_P"
+ENV_LOAD_RETRIES = "LOCAL_FOREMAN_LOAD_RETRIES"
+ENV_LOAD_RETRY_SLEEP = "LOCAL_FOREMAN_LOAD_RETRY_SLEEP"
+DEFAULT_LOAD_RETRIES = 3
+DEFAULT_LOAD_RETRY_SLEEP = 1.0
+
+_LOAD_TRANSIENT_HINTS = (
+    "connection",
+    "timeout",
+    "timed out",
+    "network",
+    "hub",
+    "huggingface",
+    "hf.co",
+    "download",
+    "temporary",
+    "unavailable",
+    "reset by peer",
+    "name resolution",
+    "errno",
+    "broken pipe",
+    "connection reset",
+    "connection refused",
+    "temporarily",
+)
+
+MLX_MISSING_MSG = (
+    "mlx-lm is not installed. On Apple Silicon run: "
+    "pip install 'local-foreman[mlx]'. "
+    "On this machine use --worker mock or LOCAL_FOREMAN_WORKER=mock."
+)
+
+LoadEventCb = Callable[[str, dict[str, Any]], None]
+MlxLoader = Callable[[str], Any]
 
 ACTION_KINDS = {"tool", "done", "unsure", "thought"}
 
@@ -124,6 +160,114 @@ def resolve_optional_float(name: str, explicit: Optional[float] = None) -> Optio
         return float(raw)
     except ValueError:
         return None
+
+
+def resolve_load_retries(explicit: Optional[int] = None) -> int:
+    """How many times to try mlx-lm load. Min 1. Default 3."""
+    if explicit is not None:
+        try:
+            n = int(explicit)
+            if n >= 1:
+                return n
+        except (TypeError, ValueError):
+            pass
+    raw = (os.environ.get(ENV_LOAD_RETRIES) or "").strip()
+    if raw:
+        try:
+            n = int(raw)
+            if n >= 1:
+                return n
+        except ValueError:
+            pass
+    return DEFAULT_LOAD_RETRIES
+
+
+def resolve_load_retry_sleep(explicit: Optional[float] = None) -> float:
+    """Seconds between load attempts. Default 1; smoke sets 0."""
+    if explicit is not None:
+        try:
+            n = float(explicit)
+            if n >= 0:
+                return n
+        except (TypeError, ValueError):
+            pass
+    raw = (os.environ.get(ENV_LOAD_RETRY_SLEEP) or "").strip()
+    if raw:
+        try:
+            n = float(raw)
+            if n >= 0:
+                return n
+        except ValueError:
+            pass
+    return DEFAULT_LOAD_RETRY_SLEEP
+
+
+def _short_err(exc: BaseException, limit: int = 120) -> str:
+    text = str(exc).strip() or type(exc).__name__
+    text = " ".join(text.split())
+    if len(text) > limit:
+        return text[: limit - 1] + "…"
+    return text
+
+
+def is_transient_load_error(exc: BaseException) -> bool:
+    """Connection/timeout/OS/URL or hub/network-looking messages."""
+    if isinstance(exc, ImportError):
+        return False
+    if isinstance(exc, (ConnectionError, TimeoutError, OSError, URLError)):
+        return True
+    msg = str(exc).lower()
+    return any(h in msg for h in _LOAD_TRANSIENT_HINTS)
+
+
+def default_mlx_loader(model_id: str) -> tuple[Any, Any, Any]:
+    """Import mlx-lm and load weights. Returns (model, tokenizer, generate)."""
+    from mlx_lm import generate, load  # type: ignore
+
+    model, tokenizer = load(model_id)
+    return model, tokenizer, generate
+
+
+def default_on_load(event: str, detail: dict[str, Any]) -> None:
+    """Chinese stderr progress for real Mac users. Not a coach ask."""
+    model_id = str(detail.get("model_id") or "")
+    if event == "start":
+        attempt = detail.get("attempt", 1)
+        max_attempts = detail.get("max_attempts", 1)
+        print(
+            f"加载中 {model_id}（第 {attempt}/{max_attempts} 次）",
+            file=sys.stderr,
+            flush=True,
+        )
+    elif event == "retry":
+        attempt = detail.get("attempt", 1)
+        err = detail.get("error") or ""
+        print(
+            f"加载失败，第 {attempt} 次重试：{err}",
+            file=sys.stderr,
+            flush=True,
+        )
+    elif event == "ok":
+        print("加载成功", file=sys.stderr, flush=True)
+    elif event == "fail":
+        attempts = detail.get("attempts", 1)
+        err = detail.get("error") or ""
+        print(
+            f"加载失败（已尝试 {attempts} 次）：{err}\n"
+            f"请检查网络或本地权重缓存。可 pip install 'local-foreman[mlx]'，"
+            f"或用 --worker mock / LOCAL_FOREMAN_WORKER=mock。",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def load_fail_message(*, model_id: str, attempts: int, error: str) -> str:
+    return (
+        f"MLX model load failed for {model_id} after {attempts} attempt(s): {error}. "
+        f"模型加载失败（已重试）。Check network / local cache, "
+        f"pip install 'local-foreman[mlx]', or use --worker mock / "
+        f"LOCAL_FOREMAN_WORKER=mock."
+    )
 
 
 def strip_thinking(raw: str) -> str:
@@ -359,7 +503,8 @@ class MlxWorker:
     """Apple Silicon worker. Loads mlx-lm once; import is deferred until first step.
 
     Default weights: mlx-community/Qwen3-8B-4bit (override with LOCAL_FOREMAN_MLX_MODEL).
-    Construction is cheap and does not download. Smoke must never call step() on this class.
+    Construction is cheap and does not download. Smoke must never call step() or the
+    default loader — inject loader= for load-retry checks instead.
     """
 
     DEFAULT_MODEL = DEFAULT_MLX_MODEL
@@ -370,6 +515,11 @@ class MlxWorker:
         max_tokens: Optional[int] = None,
         temp: Optional[float] = None,
         top_p: Optional[float] = None,
+        *,
+        loader: Optional[MlxLoader] = None,
+        on_load: Optional[LoadEventCb] = None,
+        load_retries: Optional[int] = None,
+        load_retry_sleep: Optional[float] = None,
     ):
         self.model_id = (
             model_id
@@ -379,25 +529,101 @@ class MlxWorker:
         self.max_tokens = resolve_max_tokens(max_tokens)
         self.temp = resolve_optional_float(ENV_TEMP, temp)
         self.top_p = resolve_optional_float(ENV_TOP_P, top_p)
+        self._loader = loader
+        self.on_load: LoadEventCb = (
+            default_on_load if on_load is None else on_load
+        )
+        self.load_retries = resolve_load_retries(load_retries)
+        self.load_retry_sleep = resolve_load_retry_sleep(load_retry_sleep)
         self._model = None
         self._tokenizer = None
         self._generate = None
         self.last_system: str = ""
 
+    def _emit_load(self, event: str, **detail: Any) -> None:
+        cb = self.on_load
+        if cb is None:
+            return
+        payload = dict(detail)
+        payload.setdefault("model_id", self.model_id)
+        try:
+            cb(event, payload)
+        except Exception:
+            # Progress must never break load itself.
+            pass
+
+    def _unpack_loader_result(self, result: Any) -> tuple[Any, Any, Any]:
+        if not isinstance(result, (tuple, list)) or len(result) < 2:
+            raise RuntimeError(
+                "MlxWorker loader must return (model, tokenizer) or "
+                "(model, tokenizer, generate)"
+            )
+        model, tokenizer = result[0], result[1]
+        generate_fn = result[2] if len(result) >= 3 else None
+        return model, tokenizer, generate_fn
+
     def _ensure(self) -> None:
         if self._model is not None:
             return
-        try:
-            from mlx_lm import generate, load  # type: ignore
-        except ImportError as exc:
-            raise RuntimeError(
-                "mlx-lm is not installed. On Apple Silicon run: "
-                "pip install 'local-foreman[mlx]'. "
-                "On this machine use --worker mock or LOCAL_FOREMAN_WORKER=mock."
-            ) from exc
-        # load() may download weights — never call step() / _ensure() from smoke.
-        self._model, self._tokenizer = load(self.model_id)
-        self._generate = generate
+        loader = self._loader if self._loader is not None else default_mlx_loader
+        max_attempts = self.load_retries
+        last_exc: Optional[BaseException] = None
+        attempts_done = 0
+        for attempt in range(1, max_attempts + 1):
+            attempts_done = attempt
+            self._emit_load(
+                "start",
+                model_id=self.model_id,
+                attempt=attempt,
+                max_attempts=max_attempts,
+            )
+            try:
+                model, tokenizer, generate_fn = self._unpack_loader_result(
+                    loader(self.model_id)
+                )
+                self._model = model
+                self._tokenizer = tokenizer
+                self._generate = generate_fn
+                self._emit_load(
+                    "ok",
+                    model_id=self.model_id,
+                    attempts=attempt,
+                )
+                return
+            except ImportError as exc:
+                # Missing mlx-lm (or loader signaling the same). Do not retry.
+                raise RuntimeError(MLX_MISSING_MSG) from exc
+            except Exception as exc:
+                last_exc = exc
+                transient = is_transient_load_error(exc)
+                if attempt < max_attempts and transient:
+                    self._emit_load(
+                        "retry",
+                        model_id=self.model_id,
+                        attempt=attempt + 1,
+                        error=_short_err(exc),
+                    )
+                    sleep_s = self.load_retry_sleep
+                    if sleep_s and sleep_s > 0:
+                        time.sleep(sleep_s)
+                    continue
+                break
+        if attempts_done < 1:
+            attempts_done = 1
+        err_text = _short_err(last_exc) if last_exc is not None else "unknown"
+        self._emit_load(
+            "fail",
+            model_id=self.model_id,
+            attempts=attempts_done,
+            error=err_text,
+        )
+        raise RuntimeError(
+            load_fail_message(
+                model_id=self.model_id,
+                attempts=attempts_done,
+                error=err_text,
+            )
+        ) from last_exc
 
     def _prompt(self, *, goal: str, system: str, history: list[dict], idle: bool = False) -> str:
         messages = build_chat_messages(

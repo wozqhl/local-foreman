@@ -255,6 +255,26 @@ class ForemanLoop:
         self._goal = ""
         self._last_write_path = ""
         self._low_p_streak = 0
+        self._wire_mlx_load_progress()
+
+    def _wire_mlx_load_progress(self) -> None:
+        """Map MlxWorker load events to board states. Not a coach ask."""
+        w = self.worker
+        if type(w).__name__ != "MlxWorker":
+            return
+        if not self.on_state:
+            return
+        prev = getattr(w, "on_load", None)
+
+        def combined(event: str, detail: dict) -> None:
+            if event == "start":
+                self.on_state("加载中")
+            elif event == "retry":
+                self.on_state("重试加载")
+            if prev is not None:
+                prev(event, detail)
+
+        w.on_load = combined
 
     def _reset_backoff(self) -> None:
         self._idle_interval = self.idle_start

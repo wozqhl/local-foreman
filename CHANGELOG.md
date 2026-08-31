@@ -2,6 +2,13 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.3.0] — 2026-08-31
+
+### Added
+
+- MLX 模型加载进度与失败重试：`MlxWorker` 可注入 `loader` / `on_load`；默认 stderr 中文进度（加载中 / 重试 / 成功 / 失败）；`LOCAL_FOREMAN_LOAD_RETRIES`（默认 3）与 `LOCAL_FOREMAN_LOAD_RETRY_SLEEP`（默认 1，smoke 置 0）控制重试。看板映射 `加载中` / `重试加载`，不计入教练 ask。
+- Smoke：`load-retry-ok`（假 loader 失败两次后成功、始终失败、ImportError 提示；不 `step`、不装 mlx-lm、不打教练）。原有 token 保留。不宣称三项目标已达成。
+
 ## [0.2.9] — 2026-08-28
 
 ### Changed

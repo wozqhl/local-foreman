@@ -1997,6 +1997,151 @@ def _smoke_think_strip(errors: list[str]) -> None:
         print("think-strip-ok")
 
 
+def _smoke_load_retry(errors: list[str]) -> None:
+    """Injectable MlxWorker load retries. Never imports mlx-lm or calls step()."""
+    from local_foreman.worker import (
+        ENV_LOAD_RETRIES,
+        ENV_LOAD_RETRY_SLEEP,
+        MLX_MISSING_MSG,
+        MlxWorker,
+    )
+
+    n0 = len(errors)
+    prev_retries = os.environ.get(ENV_LOAD_RETRIES)
+    prev_sleep = os.environ.get(ENV_LOAD_RETRY_SLEEP)
+    try:
+        os.environ[ENV_LOAD_RETRY_SLEEP] = "0"
+        os.environ[ENV_LOAD_RETRIES] = "3"
+
+        # Construction must stay lazy.
+        probe_calls = {"n": 0}
+
+        def probe_loader(_model_id: str):
+            probe_calls["n"] += 1
+            raise RuntimeError("probe loader should not run at construct")
+
+        lazy = MlxWorker(loader=probe_loader, on_load=lambda *_: None)
+        if probe_calls["n"] != 0:
+            errors.append("load-retry-ok: construction called loader")
+        if lazy._model is not None:
+            errors.append("load-retry-ok: construction set _model")
+
+        # Fail twice (transient), then succeed. Assert 3 calls + start/retry/ok.
+        calls = {"n": 0}
+        events: list[str] = []
+
+        def flaky_loader(_model_id: str):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                if calls["n"] == 1:
+                    raise ConnectionError("simulated hub connection reset")
+                raise OSError("simulated download timeout")
+            dummy_model = object()
+            dummy_tok = object()
+
+            def dummy_generate(*_a, **_k):
+                return '{"kind":"done","thought":"dummy"}'
+
+            return dummy_model, dummy_tok, dummy_generate
+
+        def on_load(event: str, detail: dict) -> None:
+            events.append(event)
+
+        w = MlxWorker(loader=flaky_loader, on_load=on_load)
+        if calls["n"] != 0:
+            errors.append("load-retry-ok: flaky construction loaded")
+        w._ensure()
+        if calls["n"] != 3:
+            errors.append(
+                "load-retry-ok: expected 3 loader calls got " + str(calls["n"])
+            )
+        if "start" not in events:
+            errors.append("load-retry-ok: missing start event " + str(events))
+        if "retry" not in events:
+            errors.append("load-retry-ok: missing retry event " + str(events))
+        if "ok" not in events:
+            errors.append("load-retry-ok: missing ok event " + str(events))
+        if w._model is None or w._generate is None:
+            errors.append("load-retry-ok: _ensure did not store model/generate")
+        # Second _ensure is a no-op (already loaded).
+        w._ensure()
+        if calls["n"] != 3:
+            errors.append("load-retry-ok: second _ensure reloaded")
+
+        # Always-fail transient → RuntimeError after retries; on_load saw fail.
+        fail_events: list[str] = []
+
+        def always_fail(_model_id: str):
+            raise ConnectionError("hub unreachable forever")
+
+        w2 = MlxWorker(loader=always_fail, on_load=lambda e, _d: fail_events.append(e))
+        raised = None
+        try:
+            w2._ensure()
+        except RuntimeError as exc:
+            raised = exc
+        except Exception as exc:
+            raised = exc
+            errors.append(
+                "load-retry-ok: always-fail raised "
+                + type(exc).__name__
+                + " not RuntimeError"
+            )
+        if raised is None:
+            errors.append("load-retry-ok: always-fail did not raise")
+        else:
+            msg = str(raised)
+            if "retry" not in msg.lower() and "重试" not in msg:
+                errors.append(
+                    "load-retry-ok: fail message missing retry hint: " + msg[:160]
+                )
+            if "mock" not in msg.lower():
+                errors.append(
+                    "load-retry-ok: fail message missing mock fallback: " + msg[:160]
+                )
+        if "fail" not in fail_events:
+            errors.append(
+                "load-retry-ok: missing fail event " + str(fail_events)
+            )
+        if fail_events.count("start") < 1:
+            errors.append("load-retry-ok: always-fail missing start")
+
+        # ImportError keeps the existing pip install hint (no retry storm).
+        def missing_mlx(_model_id: str):
+            raise ImportError("No module named 'mlx_lm'")
+
+        w3 = MlxWorker(loader=missing_mlx, on_load=lambda *_: None)
+        missing_raised = None
+        try:
+            w3._ensure()
+        except RuntimeError as exc:
+            missing_raised = exc
+        if missing_raised is None:
+            errors.append("load-retry-ok: ImportError path did not raise RuntimeError")
+        else:
+            msg = str(missing_raised)
+            if msg != MLX_MISSING_MSG and "pip install 'local-foreman[mlx]'" not in msg:
+                errors.append(
+                    "load-retry-ok: ImportError hint changed: " + msg[:160]
+                )
+            if "LOCAL_FOREMAN_WORKER=mock" not in msg and "--worker mock" not in msg:
+                errors.append(
+                    "load-retry-ok: ImportError missing mock hint: " + msg[:160]
+                )
+    finally:
+        if prev_retries is None:
+            os.environ.pop(ENV_LOAD_RETRIES, None)
+        else:
+            os.environ[ENV_LOAD_RETRIES] = prev_retries
+        if prev_sleep is None:
+            os.environ.pop(ENV_LOAD_RETRY_SLEEP, None)
+        else:
+            os.environ[ENV_LOAD_RETRY_SLEEP] = prev_sleep
+
+    if len(errors) == n0:
+        print("load-retry-ok")
+
+
 def run_smoke() -> int:
     root = Path(__file__).resolve().parents[2]
     errors = []
@@ -2092,6 +2237,7 @@ def run_smoke() -> int:
     _smoke_calibrate(root, errors)
     _smoke_think_strip(errors)
     _smoke_chat_turns(errors)
+    _smoke_load_retry(errors)
 
     if errors:
         for e in errors:

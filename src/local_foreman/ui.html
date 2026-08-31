@@ -164,7 +164,9 @@ const HINTS = {
   verify: "核对中：教练在看本地草稿，不是求助",
   ask: "求助中（正在咨询大模型）",
   apply: "已收到指示，准备继续",
-  idle: "空转中：本地在等下一次自己想，不问教练"
+  idle: "空转中：本地在等下一次自己想，不问教练",
+  "加载中": "正在加载本地 MLX 模型，不是求助教练",
+  "重试加载": "本地模型加载失败，正在重试，不是求助教练"
 };
 function esc(s) {
   return String(s || "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -176,6 +178,8 @@ function labelOf(snap) {
   if (last && last.kind === "retrieved") return "展开原文";
   if (last && last.kind === "verified_coach") return "核对中";
   if (last && last.kind === "coach_verdict") return "已核对";
+  if (snap.state === "加载中") return "加载中";
+  if (snap.state === "重试加载") return "重试加载";
   if (snap.state === "verify") return "核对中";
   if (snap.state === "idle") return "空转中";
   if (last && LABELS[last.kind]) return LABELS[last.kind];
