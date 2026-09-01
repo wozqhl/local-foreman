@@ -52,6 +52,7 @@
   .dot.work { background: var(--work); }
   .dot.idle { background: var(--idle); animation: none; }
   .dot.verify { background: var(--verify); animation: none; }
+  .dot.confirm { background: var(--danger); animation: none; }
   @keyframes pulse { 50% { box-shadow: 0 0 0 10px rgba(227,107,45,.04); } }
   .status-label { font-size: 28px; font-weight: 700; letter-spacing: .04em; }
   .status-hint { color: var(--muted); font-size: 13px; margin-top: 4px; }
@@ -78,6 +79,7 @@
   .tag.lesson { color: var(--muted); }
   .tag.self_verify { color: var(--idle); }
   .tag.demo { color: var(--go); }
+  .tag.user_denied { color: var(--danger); }
   footer { margin-top: 18px; color: var(--muted); font-size: 12px; }
 </style>
 </head>
@@ -86,7 +88,7 @@
   <header>
     <div>
       <h1>Local Foreman · 本机看板</h1>
-      <div class="sub">三条车道：LOW 本地干（0 token） / MID 核对草稿（核对中，不是求助） / HIGH 说清问题再问。目标是更快、质量相当、token 更少——尚未用数字宣称已达成。空转只在本地想。本页只跑在 127.0.0.1，mock 演示不用 key。</div>
+      <div class="sub">三条车道：LOW 本地干（0 token） / MID 核对草稿（核对中，不是求助） / HIGH 说清问题再问。高风险 continue 会待确认。目标是更快、质量相当、token 更少——尚未用数字宣称已达成。空转只在本地想。本页只跑在 127.0.0.1，mock 演示不用 key。</div>
     </div>
     <div class="actions">
       <a class="dl" href="/traj" download="traj.jsonl">下载轨迹</a>
@@ -126,10 +128,10 @@
   </section>
 
   <section class="log">
-    <h2>心思 / 事件 work · thought · idle_act · retrieved · self_verify · demo · verified_coach · coach_verdict · stuck · asked_coach · coach_instruction · resumed</h2>
+    <h2>心思 / 事件 work · thought · idle_act · retrieved · self_verify · demo · verified_coach · coach_verdict · stuck · asked_coach · coach_instruction · resumed · user_denied</h2>
     <div id="log"></div>
   </section>
-  <footer>只监听 127.0.0.1:8765 · python -m local_foreman ui · python -m local_foreman traj --stats 统计同一条 jsonl 的 ask / verify · 求助中会标明正在咨询大模型 · 核对中不是求助 · 空转中 / 自己在想 / 展开原文 / 空转动手 不是求助，也不计 ask 次数</footer>
+  <footer>只监听 127.0.0.1:8765 · python -m local_foreman ui · python -m local_foreman traj --stats 统计同一条 jsonl 的 ask / verify · 求助中会标明正在咨询大模型 · 核对中不是求助 · 待确认是高风险 continue 的第二次确认 · 空转中 / 自己在想 / 展开原文 / 空转动手 不是求助，也不计 ask 次数</footer>
 </div>
 <script>
 const LABELS = {
@@ -145,7 +147,8 @@ const LABELS = {
   coach_verdict: "已核对",
   lesson: "教训",
   self_verify: "本地自核",
-  demo: "本地示范"
+  demo: "本地示范",
+  user_denied: "已拒绝"
 };
 const HINTS = {
   work: "本地模型正在干活",
@@ -166,7 +169,9 @@ const HINTS = {
   apply: "已收到指示，准备继续",
   idle: "空转中：本地在等下一次自己想，不问教练",
   "加载中": "正在加载本地 MLX 模型，不是求助教练",
-  "重试加载": "本地模型加载失败，正在重试，不是求助教练"
+  "重试加载": "本地模型加载失败，正在重试，不是求助教练",
+  user_denied: "用户拒绝高风险继续，不执行 git/remote",
+  "待确认": "教练建议 continue，等待你确认高风险 git/remote"
 };
 function esc(s) {
   return String(s || "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -178,8 +183,10 @@ function labelOf(snap) {
   if (last && last.kind === "retrieved") return "展开原文";
   if (last && last.kind === "verified_coach") return "核对中";
   if (last && last.kind === "coach_verdict") return "已核对";
+  if (last && last.kind === "user_denied") return "已拒绝";
   if (snap.state === "加载中") return "加载中";
   if (snap.state === "重试加载") return "重试加载";
+  if (snap.state === "待确认") return "待确认";
   if (snap.state === "verify") return "核对中";
   if (snap.state === "idle") return "空转中";
   if (last && LABELS[last.kind]) return LABELS[last.kind];
@@ -195,6 +202,7 @@ function paint(snap) {
   document.getElementById("state-hint").textContent = HINTS[last.kind] || HINTS[snap.state] || "";
   const dot = document.getElementById("dot");
   dot.className = "dot " + (last.kind === "asked_coach" || last.kind === "stuck" || snap.state === "ask" ? "ask"
+    : last.kind === "user_denied" || snap.state === "待确认" ? "confirm"
     : last.kind === "verified_coach" || snap.state === "verify" ? "verify"
     : last.kind === "coach_verdict" || last.kind === "coach_instruction" || snap.state === "apply" ? "got"
     : last.kind === "retrieved" ? "got"

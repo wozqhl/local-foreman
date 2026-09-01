@@ -34,16 +34,21 @@ verified_coach / coach_verdict / self_verify / demo.
 Idle local think is extra: never calls the coach. Idle-act still honors
 the four HIGH rules; MID verify is skipped so idle never spends on verify.
 After ask-apply, the worker MUST continue with the coach instruction.
+HIGH apply + continue + git/remote/push asks the user once more (TTY default)
+before resuming act. Decline is halt-like: user_denied, no git/remote execute,
+no extra coach call. LOCAL_FOREMAN_CONFIRM=0 / --no-confirm skips.
 Verify accept executes a held write; the coach does not rewrite the file.
 asked_coach / coach_instruction tally HIGH asks. verified_coach /
 coach_verdict tally MID verifies and are NOT counted as asks.
 LOCAL_FOREMAN_MAX_ASKS hard-caps asked_coach (unset = no cap).
 LOCAL_FOREMAN_MAX_VERIFIES hard-caps verified_coach (unset = no cap).
+Inject confirm(prompt)->bool so smoke never blocks on stdin.
 """
 
 from __future__ import annotations
 
 import os
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -103,6 +108,7 @@ from local_foreman.traj import (
     EVENT_WORK,
     EVENT_SELF_VERIFY,
     EVENT_DEMO,
+    EVENT_USER_DENIED,
     Trajectory,
     compact_entries,
     default_traj_path,
@@ -136,6 +142,7 @@ ENV_IDLE_CAP = "LOCAL_FOREMAN_IDLE_CAP"
 ENV_MAX_ASKS = "LOCAL_FOREMAN_MAX_ASKS"
 ENV_MAX_VERIFIES = "LOCAL_FOREMAN_MAX_VERIFIES"
 ENV_VERIFY_BELOW = "LOCAL_FOREMAN_VERIFY_BELOW"
+ENV_CONFIRM = "LOCAL_FOREMAN_CONFIRM"
 
 DEFAULT_IDLE_START = 5.0
 DEFAULT_IDLE_CAP = 300.0
@@ -157,6 +164,23 @@ def env_float(name: str, default: float) -> float:
         return float(raw)
     except ValueError:
         return default
+
+
+def stdin_is_tty() -> bool:
+    try:
+        return bool(sys.stdin.isatty())
+    except Exception:
+        return False
+
+
+def tty_confirm(prompt: str) -> bool:
+    """CLI second confirmation. Empty / EOF / n -> False."""
+    print(prompt, flush=True)
+    try:
+        raw = input("待确认 [y/N]: ").strip().lower()
+    except EOFError:
+        return False
+    return raw in {"y", "yes", "是"}
 
 
 @dataclass
@@ -201,6 +225,8 @@ class ForemanLoop:
         max_verifies: Optional[int] = None,
         verify_below: Optional[float] = None,
         demo_path: Optional[Path] = None,
+        confirm: Optional[Callable[[str], bool]] = None,
+        require_confirm: Optional[bool] = None,
     ):
         self.worker = worker or make_worker()
         self.coach = coach or make_coach()
@@ -252,6 +278,11 @@ class ForemanLoop:
         self._pending_draft = ""
         self._pending_verify_risk = "none"
         self.demo_path = Path(demo_path) if demo_path else default_demo_path(self.root)
+        self.confirm = confirm
+        if require_confirm is None:
+            self.require_confirm = env_flag(ENV_CONFIRM, default=stdin_is_tty())
+        else:
+            self.require_confirm = bool(require_confirm)
         self._goal = ""
         self._last_write_path = ""
         self._low_p_streak = 0
@@ -686,6 +717,42 @@ class ForemanLoop:
             return None
         accepts = sum(1 for v in recent if v == "accept")
         return accepts / len(recent)
+
+    def _high_risk_continue(self, verdict: str, reason: str) -> bool:
+        """HIGH apply continue whose escalate was git mutate / remote / push."""
+        if str(verdict or "") != "continue":
+            return False
+        return reason == ESCALATE_GIT_OR_REMOTE
+
+    def _should_confirm(self, verdict: str, reason: str) -> bool:
+        if not self._high_risk_continue(verdict, reason):
+            return False
+        if self.confirm is not None:
+            return True
+        return bool(self.require_confirm)
+
+    def _confirm_prompt(
+        self,
+        action: Optional[WorkerAction],
+        instruction: str,
+        reason: str,
+        risk: str,
+    ) -> str:
+        what = action.describe() if action is not None else (reason or "git/remote")
+        ins = " ".join(str(instruction or "").split())
+        if len(ins) > 160:
+            ins = ins[:157] + "..."
+        return (
+            "待确认：教练建议 continue，但升级原因是高风险 "
+            f"({reason or ESCALATE_GIT_OR_REMOTE} / {risk or 'push'}): {what}. "
+            f"指示：{ins or '(无)'}。"
+            "同意则按指示回到干活（仍不自动执行被拦住的 remote）；"
+            "拒绝则当作 halt，不执行 git/remote。"
+        )
+
+    def _ask_confirm(self, prompt: str) -> bool:
+        fn = self.confirm if self.confirm is not None else tty_confirm
+        return bool(fn(prompt))
 
     def _handle_act(
         self,
@@ -1283,6 +1350,35 @@ class ForemanLoop:
                 if reply.verdict == "halt":
                     result.done_reason = "halt: " + reply.instruction
                     break
+                if self._should_confirm(reply.verdict, pending_reason):
+                    if self.on_state:
+                        self.on_state("待确认")
+                    prompt = self._confirm_prompt(
+                        pending_action,
+                        reply.instruction,
+                        pending_reason,
+                        pending_risk,
+                    )
+                    if not self._ask_confirm(prompt):
+                        # Decline: halt-like. Do not execute the git/remote.
+                        # Do not invent a new coach call.
+                        self._emit(
+                            result,
+                            EVENT_USER_DENIED,
+                            "用户拒绝高风险继续，不执行 git/remote",
+                            instruction=reply.instruction,
+                            problem=self.last_problem,
+                            state="待确认",
+                            extra={
+                                "reason": pending_reason,
+                                "risk": pending_risk,
+                            },
+                        )
+                        result.done_reason = "halt: user denied"
+                        pending_action = None
+                        self._pending_problem = ""
+                        self._pending_kind = ""
+                        break
                 if reply.verdict == "revise":
                     self._emit_lesson(result, reply.instruction, about="ask")
                 # continue / revise: back to act with instruction in system prompt.

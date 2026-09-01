@@ -1,7 +1,7 @@
 """Local live board: stdlib HTTP + SSE on 127.0.0.1:8765.
 
 Chinese status: 干活中 / 核对中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 /
-空转中 / 自己在想 / 展开原文 / 空转动手 / 加载中 / 重试加载.
+空转中 / 自己在想 / 展开原文 / 空转动手 / 加载中 / 重试加载 / 待确认.
 Mock demo needs no keys: read → fake escalate → apply continue.
 UI defaults persist+idle ON so the board grows a mind log. Idle never
 asks the coach. retrieved / idle_act share the same SSE traj.
@@ -36,6 +36,7 @@ STATE_LABELS = {
     "idle": "空转中",
     "加载中": "加载中",
     "重试加载": "重试加载",
+    "待确认": "待确认",
 }
 EVENT_LABELS = {
     "work": "干活中",
@@ -51,13 +52,14 @@ EVENT_LABELS = {
     "lesson": "教训",
     "self_verify": "本地自核",
     "demo": "本地示范",
+    "user_denied": "已拒绝",
 }
 
 
 def state_label(state: str, last_kind: str = "") -> str:
     # Idle is local. Never reuse the coach-consult copy.
     # MLX weight load is local progress, never a coach ask.
-    if state in ("加载中", "重试加载"):
+    if state in ("加载中", "重试加载", "待确认"):
         return state
     if last_kind == "thought":
         return "自己在想"
@@ -69,6 +71,8 @@ def state_label(state: str, last_kind: str = "") -> str:
         return "核对中"
     if last_kind == "coach_verdict":
         return "已核对"
+    if last_kind == "user_denied":
+        return "已拒绝"
     if state == "idle":
         return "空转中"
     if last_kind in EVENT_LABELS:
@@ -147,6 +151,8 @@ class LiveBoard:
                 self.state = "apply"
             elif kind == "coach_instruction":
                 self.state = "apply"
+            elif kind == "user_denied":
+                self.state = "待确认"
             elif kind == "thought":
                 self.state = "idle"
             elif kind == "idle_act":
@@ -275,6 +281,7 @@ def run_demo(
             idle=idle,
             idle_max=idle_max,
             traj_path=traj_path,
+            require_confirm=False,
         )
         loop.run(DEMO_GOAL)
         return board.snapshot()
@@ -434,7 +441,7 @@ def serve_forever(
     httpd, board = make_server(host, port, root)
     actual = httpd.server_address[1]
     print(f"本机看板: http://{host}:{actual}/", flush=True)
-    print("状态：干活中 / 核对中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想 / 展开原文 / 空转动手", flush=True)
+    print("状态：干活中 / 核对中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想 / 展开原文 / 空转动手 / 待确认", flush=True)
     print("mock 演示无需 API key。空转只在本地想，不问教练。Ctrl+C 退出。", flush=True)
     board.load_traj(default_traj_path(root))
     if auto_demo:

@@ -7,7 +7,7 @@ can expand a summary back to the original lines.
 Coach usage is counted on this same file: asked_coach / coach_instruction.
 Verify events (verified_coach / coach_verdict) are a separate MID-lane tally
 and are NOT counted as asked_coach. Idle thought / idle_act / retrieved
-/ self_verify / demo never increment either tally. Estimated USD is optional and only appears
+/ self_verify / demo / user_denied never increment either tally. Estimated USD is optional and only appears
 when COACH_USD_PER_ASK is set (asks only, not verifies).
 LOCAL_FOREMAN_MAX_ASKS hard-caps asked_coach (unset = no cap).
 LOCAL_FOREMAN_MAX_VERIFIES hard-caps verified_coach (unset = no cap).
@@ -41,6 +41,7 @@ EVENT_COACH_VERDICT = "coach_verdict"
 EVENT_LESSON = "lesson"
 EVENT_SELF_VERIFY = "self_verify"
 EVENT_DEMO = "demo"
+EVENT_USER_DENIED = "user_denied"
 
 EVENT_KINDS = (
     EVENT_WORK,
@@ -56,6 +57,7 @@ EVENT_KINDS = (
     EVENT_LESSON,
     EVENT_SELF_VERIFY,
     EVENT_DEMO,
+    EVENT_USER_DENIED,
 )
 
 DEFAULT_RECENT = 8
@@ -383,7 +385,7 @@ def coach_stats(entries: list[dict[str, Any]]) -> dict[str, Any]:
     """Count ask / coach replies on this traj. Idle thoughts do not count.
 
     asks = asked_coach rows (a real consult). replies = coach_instruction
-    rows. thought / idle_act / retrieved / work / stuck are ignored.
+    rows. thought / idle_act / retrieved / work / stuck / user_denied are ignored.
     estimated_usd is included only when COACH_USD_PER_ASK is set.
     max_asks is included only when LOCAL_FOREMAN_MAX_ASKS is set.
     """

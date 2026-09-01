@@ -30,6 +30,7 @@ from local_foreman.demo import (
 )
 from local_foreman.loop import (
     COACH_INSTRUCTION_HEADER,
+    ENV_CONFIRM,
     ENV_PERSIST,
     RETRIEVED_CONTEXT_HEADER,
     ForemanLoop,
@@ -64,6 +65,7 @@ def run_goal(
     user_review: bool = False,
     max_steps: int = 12,
     persist: Optional[bool] = None,
+    require_confirm: Optional[bool] = None,
 ) -> int:
     def on_state(name: str) -> None:
         print(name, flush=True)
@@ -77,6 +79,7 @@ def run_goal(
         on_state=on_state,
         persist=persist,
         idle=persist,
+        require_confirm=require_confirm,
     )
     result = loop.run(goal)
     print("done=" + result.done_reason)
@@ -2302,12 +2305,203 @@ def _smoke_git_ro(errors: list[str]) -> None:
         print("git-ro-ok")
 
 
+def _smoke_confirm(root: Path, errors: list[str]) -> None:
+    """HIGH git-push apply continue: confirm False denies, True resumes as today."""
+    import subprocess
+    import local_foreman.loop as loop_mod
+
+    n0 = len(errors)
+    push_cmd = "git " + "push" + " origin HEAD"
+    orig_run = subprocess.run
+    orig_exec = loop_mod.execute
+    push_runs: list[str] = []
+    exec_cmds: list[str] = []
+
+    def guarded_run(cmd, *a, **k):
+        s = cmd if isinstance(cmd, str) else " ".join(str(x) for x in cmd)
+        if "git" in s.split()[:1] or str(s).lstrip().startswith("git"):
+            if "push" in str(s):
+                push_runs.append(str(s))
+        return orig_run(cmd, *a, **k)
+
+    def guarded_execute(tool, args, *, root=None):
+        cmd = str((args or {}).get("cmd") or (args or {}).get("command") or "")
+        if (tool or "") == "shell" and "push" in cmd:
+            exec_cmds.append(cmd)
+        return orig_exec(tool, args, root=root)
+
+    subprocess.run = guarded_run  # type: ignore[assignment]
+    loop_mod.execute = guarded_execute  # type: ignore[assignment]
+    try:
+        tmp = Path(tempfile.mkdtemp(prefix="lf-confirm-deny-"))
+        prompts: list[str] = []
+
+        def deny(prompt: str) -> bool:
+            prompts.append(prompt)
+            return False
+
+        worker = MockWorker(script=[
+            WorkerAction(
+                kind="tool",
+                tool="shell",
+                args={"cmd": push_cmd},
+                thought="fake remote",
+            ),
+            WorkerAction(kind="done", thought="must not run after deny"),
+        ])
+        coach = MockCoach(["continue"])
+        res = ForemanLoop(
+            worker=worker,
+            coach=coach,
+            root=tmp,
+            max_steps=8,
+            persist=False,
+            idle=False,
+            confirm=deny,
+            require_confirm=True,
+        ).run("smoke: confirm deny")
+        kinds = [e.get("kind") for e in res.events]
+        if not prompts:
+            errors.append("confirm-ok: deny callback never called")
+        if "user_denied" not in kinds:
+            errors.append("confirm-ok: deny missing user_denied got=" + str(kinds))
+        if "resumed" in kinds:
+            errors.append("confirm-ok: deny still resumed")
+        if not res.done_reason.startswith("halt"):
+            errors.append("confirm-ok: deny done_reason=" + res.done_reason)
+        if len(coach.calls) != 1:
+            errors.append(
+                "confirm-ok: deny extra coach calls=" + str(len(coach.calls))
+            )
+        if coach.verify_calls:
+            errors.append("confirm-ok: deny used verify")
+        if "ask" not in res.states or "apply" not in res.states:
+            errors.append("confirm-ok: deny missed ask/apply states=" + str(res.states))
+        if any("must not run after deny" in str(h) for h in res.history):
+            errors.append("confirm-ok: deny continued to next act")
+        if push_runs:
+            errors.append("confirm-ok: deny executed git push via subprocess")
+        # execute() may see the cmd only if the loop tried to run it after apply.
+        if exec_cmds:
+            errors.append("confirm-ok: deny execute() saw git push " + str(exec_cmds))
+        outside = tmp.parent / ("lf-confirm-escape-" + tmp.name + ".txt")
+        if outside.exists():
+            errors.append("confirm-ok: deny wrote outside sandbox")
+            outside.unlink(missing_ok=True)
+        asked = [e for e in res.events if e.get("kind") == "asked_coach"]
+        if len(asked) != 1:
+            errors.append("confirm-ok: deny asked_coach count=" + str(len(asked)))
+
+        # halt must not prompt
+        halt_prompts: list[str] = []
+
+        def spy_halt(prompt: str) -> bool:
+            halt_prompts.append(prompt)
+            return True
+
+        worker_h = MockWorker(script=[
+            WorkerAction(
+                kind="tool",
+                tool="shell",
+                args={"cmd": push_cmd},
+                thought="fake remote halt",
+            ),
+            WorkerAction(kind="done", thought="after halt"),
+        ])
+        coach_h = MockCoach(["halt"])
+        res_h = ForemanLoop(
+            worker=worker_h,
+            coach=coach_h,
+            root=tmp,
+            max_steps=8,
+            persist=False,
+            idle=False,
+            confirm=spy_halt,
+            require_confirm=True,
+        ).run("smoke: confirm halt skips")
+        if halt_prompts:
+            errors.append("confirm-ok: halt called confirm")
+        if "user_denied" in [e.get("kind") for e in res_h.events]:
+            errors.append("confirm-ok: halt wrote user_denied")
+        if not res_h.done_reason.startswith("halt"):
+            errors.append("confirm-ok: halt done_reason=" + res_h.done_reason)
+
+        # Case 2: callback True → continue as today
+        tmp2 = Path(tempfile.mkdtemp(prefix="lf-confirm-yes-"))
+        yes_prompts: list[str] = []
+
+        def accept(prompt: str) -> bool:
+            yes_prompts.append(prompt)
+            return True
+
+        worker2 = MockWorker(script=[
+            WorkerAction(
+                kind="tool",
+                tool="shell",
+                args={"cmd": push_cmd},
+                thought="fake remote",
+            ),
+            WorkerAction(kind="done", thought="after confirm yes"),
+        ])
+        coach2 = MockCoach(["continue"])
+        loop2 = ForemanLoop(
+            worker=worker2,
+            coach=coach2,
+            root=tmp2,
+            max_steps=8,
+            persist=False,
+            idle=False,
+            confirm=accept,
+            require_confirm=True,
+        )
+        res2 = loop2.run("smoke: confirm accept")
+        kinds2 = [e.get("kind") for e in res2.events]
+        if not yes_prompts:
+            errors.append("confirm-ok: accept callback never called")
+        if "user_denied" in kinds2:
+            errors.append("confirm-ok: accept wrote user_denied")
+        if "resumed" not in kinds2:
+            errors.append("confirm-ok: accept missing resumed got=" + str(kinds2))
+        if "apply" not in res2.states:
+            errors.append("confirm-ok: accept missed apply states=" + str(res2.states))
+        if res2.done_reason.startswith("halt"):
+            errors.append("confirm-ok: accept halted " + res2.done_reason)
+        if COACH_INSTRUCTION_HEADER not in (worker2.last_system or ""):
+            errors.append("confirm-ok: accept instruction not in worker system")
+        if res2.last_instruction and res2.last_instruction not in (worker2.last_system or ""):
+            errors.append("confirm-ok: accept instruction text missing")
+        if len(coach2.calls) != 1:
+            errors.append("confirm-ok: accept extra coach calls=" + str(len(coach2.calls)))
+        if push_runs:
+            errors.append("confirm-ok: accept executed git push via subprocess")
+        if exec_cmds:
+            errors.append("confirm-ok: accept execute() ran git push " + str(exec_cmds))
+        if any(
+            e.get("kind") == "work"
+            and "push" in str(e.get("message") or "")
+            and str(e.get("message") or "").startswith("ok:")
+            for e in res2.events
+        ):
+            errors.append("confirm-ok: accept applied git push")
+        outside2 = tmp2.parent / ("lf-confirm-escape-" + tmp2.name + ".txt")
+        if outside2.exists():
+            errors.append("confirm-ok: accept wrote outside sandbox")
+            outside2.unlink(missing_ok=True)
+    finally:
+        subprocess.run = orig_run  # type: ignore[assignment]
+        loop_mod.execute = orig_exec  # type: ignore[assignment]
+
+    if len(errors) == n0:
+        print("confirm-ok")
+
+
 def run_smoke() -> int:
     root = Path(__file__).resolve().parents[2]
     errors = []
     os.environ["LOCAL_FOREMAN_WORKER"] = "mock"
     os.environ["LOCAL_FOREMAN_COACH"] = "mock"
     os.environ["LOCAL_FOREMAN_PERSIST"] = "0"
+    os.environ[ENV_CONFIRM] = "0"
     os.environ["LOCAL_FOREMAN_TRAJ"] = str(
         Path(tempfile.mkdtemp(prefix="lf-smoke-")) / "traj.jsonl"
     )
@@ -2400,6 +2594,7 @@ def run_smoke() -> int:
     _smoke_load_retry(errors)
     _smoke_sandbox(errors)
     _smoke_git_ro(errors)
+    _smoke_confirm(root, errors)
 
     if errors:
         for e in errors:
@@ -2448,6 +2643,11 @@ def main(argv=None) -> int:
         action="store_true",
         help="write traj jsonl and idle-think (or set LOCAL_FOREMAN_PERSIST=1)",
     )
+    parser.add_argument(
+        "--no-confirm",
+        action="store_true",
+        help="skip TTY confirm on HIGH git/remote continue (or LOCAL_FOREMAN_CONFIRM=0)",
+    )
     args = parser.parse_args(raw)
 
     if args.worker:
@@ -2456,6 +2656,8 @@ def main(argv=None) -> int:
         os.environ["LOCAL_FOREMAN_COACH"] = args.coach
     if args.persist:
         os.environ["LOCAL_FOREMAN_PERSIST"] = "1"
+    if args.no_confirm:
+        os.environ[ENV_CONFIRM] = "0"
     if args.max_tokens is not None:
         os.environ["LOCAL_FOREMAN_MAX_TOKENS"] = str(args.max_tokens)
 
@@ -2480,6 +2682,7 @@ def main(argv=None) -> int:
             user_review=args.review,
             max_steps=args.max_steps,
             persist=bool(args.persist) or env_flag(ENV_PERSIST),
+            require_confirm=False if args.no_confirm else None,
         )
     except (RuntimeError, ValueError) as exc:
         print("error: " + str(exc), file=sys.stderr)

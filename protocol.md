@@ -45,7 +45,7 @@
 
 循环：`act` →（low 留下 \| verify \| ask）→ `apply` → `act`。`halt` 在 `apply` 结束。`idle` 不进入这条闭环。
 
-事件：`work` / `stuck` / `asked_coach` / `coach_instruction` / `resumed` / `thought` / `retrieved` / `idle_act` / `verified_coach` / `coach_verdict` / `lesson` / `self_verify` / `demo`。`verified_coach` **不计入** `asked_coach`。`lesson` 是 Reflexion 的一行教训（revise 时追加），retrieve 可以捡回来。`coach_verdict` 带 `(conf, act, verdict)`。同一条 jsonl 滚动校准 P(accept | conf_bucket, act_type)；样本够且 P≥0.9（非 git-mutate）则跳过 verify。校准与 raw conf 长期分歧时只走原有 HIGH 四条，不另造 ask 原因。样本不足仍走 DSP 0.75 skip / tax <0.5。
+事件：`work` / `stuck` / `asked_coach` / `coach_instruction` / `resumed` / `thought` / `retrieved` / `idle_act` / `verified_coach` / `coach_verdict` / `lesson` / `self_verify` / `demo` / `user_denied`。`verified_coach` **不计入** `asked_coach`。`lesson` 是 Reflexion 的一行教训（revise 时追加），retrieve 可以捡回来。`coach_verdict` 带 `(conf, act, verdict)`。同一条 jsonl 滚动校准 P(accept | conf_bucket, act_type)；样本够且 P≥0.9（非 git-mutate）则跳过 verify。校准与 raw conf 长期分歧时只走原有 HIGH 四条，不另造 ask 原因。样本不足仍走 DSP 0.75 skip / tax <0.5。
 
 ## Verify 票（MID，不是 stuck）
 
@@ -115,11 +115,13 @@ Coach 回复：`{"verdict":"accept|revise|halt","instruction":"1-2 sentences"}`�
 - `revise`：回到 `act`，换方案；instruction 必注入。
 - `halt`：停。
 
+HIGH `apply` 且 verdict 是 `continue`（不是 `halt`），升级原因又是 git mutate / remote write / `git push` 时，恢复 `act` 之前要再确认一次。默认 TTY 开启；`LOCAL_FOREMAN_CONFIRM=0` 或 `--no-confirm` 跳过（CI / smoke）。循环可注入 `confirm(prompt) -> bool`，smoke 不挡 stdin。拒绝则当 halt：不执行该 git/remote，记 `user_denied`，不再问教练。同意则走原来的 continue。看板状态「待确认」。
+
 Local **必须**把 `instruction` 写进下一轮 Worker system prompt（`## Coach instruction (must follow)`）。
 
 ## 本机看板
 
-`python -m local_foreman ui` 在 `127.0.0.1:8765` 用 stdlib HTTP + SSE 展示：目标、当前状态、最后问题、教练指示、心思、教练用量、事件日志。中文状态：干活中 / **核对中** / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想 / 展开原文 / 空转动手。核对中、空转、展开原文、空转动手都不得写成正在咨询大模型。核对次数不计入 ask。
+`python -m local_foreman ui` 在 `127.0.0.1:8765` 用 stdlib HTTP + SSE 展示：目标、当前状态、最后问题、教练指示、心思、教练用量、事件日志。中文状态：干活中 / **核对中** / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想 / 展开原文 / 空转动手 / **待确认**。核对中、空转、展开原文、空转动手都不得写成正在咨询大模型。核对次数不计入 ask。待确认是 HIGH continue 的第二次确认，不是求助。
 
 ## 对照台（mock only）
 

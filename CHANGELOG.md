@@ -2,6 +2,14 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.4.1] — 2026-09-01
+
+### Added
+
+- 用户确认钩子：HIGH `apply` 且教练 `continue`（不是 halt）、升级原因是 git mutate / remote / `git push` 时，恢复 act 前再确认一次。默认 TTY 开启；`LOCAL_FOREMAN_CONFIRM=0` / `--no-confirm` 跳过。可注入 `confirm(prompt) -> bool`，smoke 不挡 stdin。拒绝记 `user_denied`，当 halt，不执行 git/remote，不再问教练。同意走原来的 continue。看板「待确认」。
+- Smoke：`confirm-ok`（mock HIGH git-push：callback False 不逃沙箱、不 push；True 与今日 continue 相同）。
+- README 顶部改为陌生人 30 秒 mock 跑通，协议细节下移。不宣称三项目标已达成。
+
 ## [0.4.0] — 2026-09-01
 
 ### Added

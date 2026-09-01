@@ -47,8 +47,8 @@
 
 - [x] 更细的 git 只读白名单
 - [x] 工作区沙箱（限制 `write` / `shell` / `read` 出根目录）
-- [ ] 用户确认钩子（终端里对 `halt` 以外的高风险 continue 再确认一次）
-- [x] Smoke：`sandbox-ok` / `git-ro-ok`
+- [x] 用户确认钩子（终端里对 `halt` 以外的高风险 continue 再确认一次）
+- [x] Smoke：`sandbox-ok` / `git-ro-ok` / `confirm-ok`
 
 ## 明确不做
 

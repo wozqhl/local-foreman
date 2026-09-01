@@ -1,10 +1,73 @@
 # Local Foreman
 
-要同时做到三件事（**尚未用数字证明**）：
+本机 Qwen 干活；只有卡住才问远端教练。目标是更快、更省 token、质量相当——**尚未用数字证明**。
 
-1. 比「只用远端大模型」更快
-2. 质量与「只用远端大模型」相当
-3. token / 教练调用显著更少
+本仓库是独立开源项目，**不是** Cursor、Grok Bot 或任何托管编程 Agent 的克隆。作者：Shaffer Wang。许可：[Apache-2.0](LICENSE)。
+
+## 30 秒跑起来（无需 API key）
+
+不下载模型、不调用真实 API：
+
+```bash
+python3 -m pip install -e .
+python3 -m local_foreman --worker mock --coach mock "读 README"
+```
+
+等价：`pip install -e .` 之后 `local-foreman --worker mock --coach mock "读 README"`。
+
+完整 mock smoke（同样无 key）：
+
+```bash
+./scripts/smoke.sh
+```
+
+看板（127.0.0.1，mock 演示，无 key）：
+
+```bash
+python3 -m local_foreman ui
+```
+
+然后打开 [http://127.0.0.1:8765/](http://127.0.0.1:8765/)。
+
+## Mac + MLX（真本地模型）
+
+需要 **Apple Silicon**。Linux CI / 本开发盒没有 MLX，不要在这些机器上 `load` 权重。
+
+```bash
+python3 -m pip install -e '.[mlx]'
+
+export LOCAL_FOREMAN_WORKER=mlx
+export LOCAL_FOREMAN_COACH=openai
+export LOCAL_FOREMAN_MLX_MODEL=mlx-community/Qwen3-8B-4bit   # 默认值，可省略
+export COACH_BASE_URL=https://api.openai.com/v1              # DeepSeek / OpenRouter 换成它们的 base
+export COACH_API_KEY=sk-...
+export COACH_MODEL=gpt-4o
+
+local-foreman "把 README 读一遍并总结"
+# 等价：
+python3 -m local_foreman --worker mlx --coach openai "把 README 读一遍并总结"
+```
+
+缺包时的错误会明确告诉你：在 Apple Silicon 上执行 `pip install 'local-foreman[mlx]'`。第一次用 `MlxWorker` 时才会 `load`；若本地没有缓存，`mlx-lm` 可能自行拉取权重。请先自己准备好，**不要在 smoke 或 CI 里触发下载**。首次加载会在 stderr / 看板打印中文进度，并对网络类失败按 `LOCAL_FOREMAN_LOAD_RETRIES` 重试（不是求助教练）。
+
+CLI 会逐行打印状态（`act` / `verify` / `ask` / `apply`，persist 时还有 `idle`），最后打印 `done=`、`states=`、`problem=`、`verdicts=`。遇到 `halt` 以非 0 退出。一次性命令默认不写盘、不空转。要持续在场：
+
+```bash
+local-foreman --persist "把 README 读一遍并总结"
+# 或 LOCAL_FOREMAN_PERSIST=1
+```
+
+轨迹只有一条 jsonl。人眼查看用同一个文件，不另起格式：
+
+```bash
+python3 -m local_foreman bench
+python3 -m local_foreman traj --last 20
+local-foreman traj --stats
+```
+
+`--last N` 只看最近，`--kind` 按逗号过滤，`--out` 导出仍是同一份 jsonl。`--stats` 统计本文件上的教练询问 / 回复次数；空转想法不计次。只有设置了 `COACH_USD_PER_ASK` 才额外估算美元。`LOCAL_FOREMAN_MAX_ASKS` 是询问硬上限。路径默认 `$LOCAL_FOREMAN_TRAJ` 或 `<cwd>/.local-foreman/traj.jsonl`。HIGH git/remote continue 默认在 TTY 再确认一次；CI / smoke 用 `LOCAL_FOREMAN_CONFIRM=0` 或 `--no-confirm`。
+
+## 是什么
 
 做法是三条风险车道，而不是每一步都问大模型（见 [protocol.md](protocol.md)）：
 
@@ -16,14 +79,8 @@
 
 当前 `act` / `verify` / `ask` / `apply` 在 chase 这三项目标。mock 对照台 `python -m local_foreman bench` 用夹具通过率当质量、用 asks+verifies 当 token 代理。**没有真实模型分数之前，不宣称已达成。**
 
-本仓库是独立开源项目，**不是 Cursor、Grok Bot 或任何托管编程 Agent 的克隆**。
-
-- 作者：Shaffer Wang
-- 许可：[Apache-2.0](LICENSE)（与 Qwen / MLX 生态兼容；不主张第三方商标，见 [NOTICE](NOTICE)）
 - 协议状态：`act` | `verify` | `ask` | `apply`（`idle` 是附加的本地空转，不问教练）
-- 本机看板：干活中 / 核对中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想 / 展开原文 / 空转动手
-
-## 是什么
+- 本机看板：干活中 / 核对中 / 求助中（正在咨询大模型） / 已收到指示 / 继续 / 空转中 / 自己在想 / 展开原文 / 空转动手 / 待确认
 
 | 角色 | 谁 | 职责 |
 | --- | --- | --- |
@@ -31,13 +88,13 @@
 | Local loop | 本仓库 | 决定何时升级；拦住 `git push` / 远端写入；把问题写成一句 `problem` |
 | Coach | 任意 OpenAI 兼容 HTTP API，或 mock | 只回一张短 JSON：`continue` / `revise` / `halt` + `instruction` |
 
-循环：`act` →（low 留下 / verify / ask）→ `apply` → `act`。HIGH 的 `apply` **必须**把教练的 `instruction` 注入下一轮 Worker system prompt。`halt` 结束进程并返回非 0。MID 的 write 在 `accept` 前不落盘。
+循环：`act` →（low 留下 / verify / ask）→ `apply` → `act`。HIGH 的 `apply` **必须**把教练的 `instruction` 注入下一轮 Worker system prompt。`halt` 结束进程并返回非 0。HIGH continue 且原因是 git mutate / remote / `git push` 时，恢复 act 前再确认一次（TTY 默认；`--no-confirm` 可跳过）。MID 的 write 在 `accept` 前不落盘。
 
 设定了工作区 `root` 时，`read` / `write` / `shell` 不能逃出根目录（绝对路径或 `..` 会本地硬拦，前缀 `sandbox:`，不问教练）。persist 长驻 Worker 也依赖这一层沙箱。
 
 HIGH 升级只发生在：同一工具连败两次、即将 mutate git / 写 remote、用户要求 review、Worker 发出 `unsure`。
 
-发给教练的不是仓库 dump，而是一句说清楚的问题：失败了什么、试过什么、现在需要什么。MID 写操作先 hold，`verify` 票是 claim+draft，`accept` 才落盘。事件日志是一条轨迹：`work` → `stuck`（带问题）→ `asked_coach` → `coach_instruction` → `resumed`，核对再追加 `verified_coach` / `coach_verdict`（不计 ask），空转再追加 `thought`，需要时还有 `retrieved` / `idle_act` / `lesson`。看板 SSE 和磁盘 jsonl 共用这一条，不另起一份日志。
+发给教练的不是仓库 dump，而是一句说清楚的问题：失败了什么、试过什么、现在需要什么。MID 写操作先 hold，`verify` 票是 claim+draft，`accept` 才落盘。事件日志是一条轨迹：`work` → `stuck`（带问题）→ `asked_coach` → `coach_instruction` → `resumed`，核对再追加 `verified_coach` / `coach_verdict`（不计 ask），空转再追加 `thought`，需要时还有 `retrieved` / `idle_act` / `lesson` / `user_denied`。看板 SSE 和磁盘 jsonl 共用这一条，不另起一份日志。
 
 空转是附加能力，不是闭环的第五步。没待处理的 Ticket、也没在跑工具时，本地 Worker 可以写一句短独白；间隔大约从 5 秒起，加倍直到上限。新目标或进入 `ask` 会把退避清零。空转**不会**打教练；想动工具仍走 `act` 和原来的四条升级条件，并记 `idle_act`。
 
@@ -62,6 +119,7 @@ local-foreman ui
 - **求助中（正在咨询大模型）** — 已把问题说清楚，正在问教练
 - **已收到指示** — 教练的 `continue` / `revise` / `halt` 已回来
 - **继续** — 指示已写入 Worker system prompt，本地接着干
+- **待确认** — HIGH continue 且下一步是 git/remote/`git push`，等人点头再恢复干活
 - **空转中** / **自己在想** — 本地在想，没有问教练。看板默认打开 persist + idle，心思日志会慢慢变长
 - **展开原文** — 把压缩摘要按 seq 取回同一条 jsonl 的原文
 - **空转动手** — 空转选了一个本地小动作，仍走 `act`，没有问教练
@@ -75,72 +133,6 @@ LOCAL_FOREMAN_UI_PORT=8765 python -m local_foreman ui
 # 只开页面、不自动演示
 python -m local_foreman ui --no-demo
 ```
-
-## 真实链路怎么接
-
-1. Apple Silicon 上装好 `mlx-lm` 和权重（见下一节）。
-2. 准备一个 OpenAI 兼容的教练端点（OpenAI、DeepSeek、OpenRouter、自建网关都可以）。
-3. 用 CLI 同时指定 Worker 和 Coach：
-
-```bash
-pip install -e '.[mlx]'
-
-export LOCAL_FOREMAN_WORKER=mlx
-export LOCAL_FOREMAN_COACH=openai
-export LOCAL_FOREMAN_MLX_MODEL=mlx-community/Qwen3-8B-4bit   # 默认值，可省略
-export COACH_BASE_URL=https://api.openai.com/v1              # DeepSeek / OpenRouter 换成它们的 base
-export COACH_API_KEY=sk-...
-export COACH_MODEL=gpt-4o
-
-local-foreman "把 README 读一遍并总结"
-# 等价：
-python -m local_foreman --worker mlx --coach openai "把 README 读一遍并总结"
-```
-
-CLI 会逐行打印状态（`act` / `verify` / `ask` / `apply`，persist 时还有 `idle`），最后打印 `done=`、`states=`、`problem=`、`verdicts=`。遇到 `halt` 以非 0 退出。
-一次性命令默认不写盘、不空转。要持续在场：
-
-```bash
-local-foreman --persist "把 README 读一遍并总结"
-# 或 LOCAL_FOREMAN_PERSIST=1
-```
-
-轨迹只有一条 jsonl。人眼查看用同一个文件，不另起格式：
-
-```bash
-python -m local_foreman bench
-# 或
-python -m local_foreman --bench
-
-local-foreman traj
-python -m local_foreman traj --last 20
-local-foreman traj --kind thought,idle_act,retrieved --last 10
-local-foreman traj --out /tmp/traj.jsonl
-local-foreman traj --stats
-```
-
-`--last N` 只看最近，`--kind` 按逗号过滤，`--out` 导出仍是同一份 jsonl。`--stats` 统计本文件上的教练询问 / 回复次数；空转想法不计次。只有设置了 `COACH_USD_PER_ASK` 才额外估算美元，默认只报次数。`LOCAL_FOREMAN_MAX_ASKS` 是询问硬上限：再问一次会超过则跳过 ask，留在本地，不调用教练。路径默认 `$LOCAL_FOREMAN_TRAJ` 或 `<cwd>/.local-foreman/traj.jsonl`。看板页也可下载同一文件，并显示同一份用量。verify accept 落盘后还会在同一 `.local-foreman` 目录写本地 demo 缓存（`demos.jsonl`），不上传、不存教练改写。
-
-没有 Mac、或不想下载权重时，整条协议仍可用 mock 跑：
-
-```bash
-python -m local_foreman --worker mock --coach mock "读 README"
-```
-
-## Mac 安装 mlx-lm
-
-需要 **Apple Silicon**。Linux CI / 本开发盒没有 MLX，不要在这些机器上 `load` 权重。
-
-```bash
-# 建议在虚拟环境里
-python3 -m pip install 'local-foreman[mlx]'
-# 或开发安装
-python3 -m pip install -e '.[mlx]'
-```
-
-这会装上 `mlx-lm`。第一次用 `MlxWorker` 时才会 `load(LOCAL_FOREMAN_MLX_MODEL)`；若本地没有缓存，`mlx-lm` 可能自行拉取 `mlx-community/Qwen3-8B-4bit`。请先自己准备好权重，**不要在 smoke 或 CI 里触发下载**。首次加载会在 stderr / 看板打印中文进度，并对网络类失败按 `LOCAL_FOREMAN_LOAD_RETRIES` 重试（不是求助教练）。
-
-缺包时的错误会明确告诉你：在 Apple Silicon 上执行 `pip install 'local-foreman[mlx]'`。
 
 ## 环境变量
 
@@ -168,8 +160,9 @@ python3 -m pip install -e '.[mlx]'
 | `LOCAL_FOREMAN_MAX_ASKS` | 整数 | 可选。教练询问硬上限。再问一次会超过则跳过 ask，留在本地（空转或 halt），不调用教练。未设置不设上限 |
 | `LOCAL_FOREMAN_MAX_VERIFIES` | 整数 | 可选。核对硬上限。再核一次会超过则跳过 verify，留在本地。未设置不设上限 |
 | `LOCAL_FOREMAN_DEMOS` | 路径 | 可选。EcoAssistant demo 缓存 jsonl。默认 `<cwd>/.local-foreman/demos.jsonl`。只存本地 compact demo，不存教练改写 |
+| `LOCAL_FOREMAN_CONFIRM` | `0` \| `1` | 可选。HIGH git/remote `continue` 是否再确认。默认 TTY 开启；`0` / `--no-confirm` 跳过（CI/smoke） |
 
-CLI 的 `--worker` / `--coach` 会覆盖对应环境变量；`--max-tokens` 写入 `LOCAL_FOREMAN_MAX_TOKENS`。`--smoke` 会强制两边都是 mock。
+CLI 的 `--worker` / `--coach` 会覆盖对应环境变量；`--max-tokens` 写入 `LOCAL_FOREMAN_MAX_TOKENS`。`--no-confirm` 写入 `LOCAL_FOREMAN_CONFIRM=0`。`--smoke` 会强制两边都是 mock。
 
 ## Smoke
 
@@ -206,6 +199,7 @@ chat-turns-ok
 load-retry-ok
 sandbox-ok
 git-ro-ok
+confirm-ok
 ```
 
 含义：
@@ -234,6 +228,7 @@ git-ro-ok
 22. `load-retry-ok` — 注入假 loader：失败两次后成功 / 始终失败 / ImportError 提示；不 load 权重、不打教练
 23. `sandbox-ok` — tempfile root 下：根内 write/shell 成功；`../` 与绝对路径越界 read/write/shell 硬拦（`sandbox:`，`escalated=False`）
 24. `git-ro-ok` — `git remote -v` / `config --get` / `stash list` / `tag -l` / `worktree list` 不 needs_ask；push/commit/remote add/config 写入仍升级
+25. `confirm-ok` — mock HIGH git-push：`confirm` 回 False 记 `user_denied`、不执行 push、不逃沙箱；回 True 走原来的 continue
 
 GitHub Actions（[`.github/workflows/smoke.yml`](.github/workflows/smoke.yml)）在 Ubuntu + Python 3.11 上只跑这一条 mock smoke。
 
