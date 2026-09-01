@@ -30,6 +30,7 @@ from local_foreman.demo import (
 )
 from local_foreman.loop import (
     COACH_INSTRUCTION_HEADER,
+    DONE_TOOL_FAILED,
     ENV_CONFIRM,
     ENV_PERSIST,
     RETRIEVED_CONTEXT_HEADER,
@@ -39,6 +40,7 @@ from local_foreman.loop import (
 from local_foreman.self_verify import score_pending_claim
 from local_foreman.ticket import problem_is_clear
 from local_foreman.traj import (
+    EVENT_WORK,
     Trajectory,
     coach_stats,
     compact_entries,
@@ -92,6 +94,14 @@ def run_goal(
     def on_state(name: str) -> None:
         print(name, flush=True)
 
+    def on_event(ev: dict) -> None:
+        if ev.get("kind") != EVENT_WORK:
+            return
+        obs = str(ev.get("observation") or "").strip()
+        if not obs:
+            return
+        print("work: " + obs, flush=True)
+
     if persist is None:
         persist = env_flag(ENV_PERSIST)
     if _default_mock_backends() and _stderr_is_tty():
@@ -101,6 +111,7 @@ def run_goal(
         user_review=user_review,
         max_steps=max_steps,
         on_state=on_state,
+        on_event=on_event,
         persist=persist,
         idle=persist,
         require_confirm=require_confirm,
@@ -114,7 +125,7 @@ def run_goal(
         print("verdicts=" + ",".join(result.verdicts))
     if result.last_instruction:
         print("instruction=" + result.last_instruction)
-    if result.done_reason.startswith("halt"):
+    if result.done_reason.startswith("halt") or result.done_reason == DONE_TOOL_FAILED:
         return 1
     return 0
 
@@ -2520,6 +2531,112 @@ def _smoke_confirm(root: Path, errors: list[str]) -> None:
 
 
 
+def _smoke_work_line(errors: list[str]) -> None:
+    """One-shot CLI prints a tool work line; missed-only read is not complete."""
+    marker = "lf-work-line-body-do-not-print"
+    prev_root = os.environ.get("LOCAL_FOREMAN_ROOT")
+    prev_traj = os.environ.get("LOCAL_FOREMAN_TRAJ")
+
+    def _run(root: Path) -> tuple[int, str]:
+        os.environ["LOCAL_FOREMAN_WORKER"] = "mock"
+        os.environ["LOCAL_FOREMAN_COACH"] = "mock"
+        os.environ[ENV_CONFIRM] = "0"
+        os.environ["LOCAL_FOREMAN_PERSIST"] = "0"
+        os.environ["LOCAL_FOREMAN_ROOT"] = str(root)
+        os.environ["LOCAL_FOREMAN_TRAJ"] = str(root / "traj.jsonl")
+        out = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = run_goal("read the readme", max_steps=6, persist=False, require_confirm=False)
+        return rc, out.getvalue()
+
+    try:
+        miss = Path(tempfile.mkdtemp(prefix="lf-work-miss-"))
+        rc_m, out_m = _run(miss)
+        work_m = [ln for ln in out_m.splitlines() if ln.startswith("work:")]
+        if not work_m:
+            errors.append("work-line-ok: miss missing work line got=" + out_m[:240])
+            return
+        if "fail:" not in work_m[0]:
+            errors.append("work-line-ok: miss work not fail got=" + work_m[0][:200])
+            return
+        leaked_m = [
+            ln.strip()
+            for ln in out_m.splitlines()
+            if ln.strip() in {"verify", "ask", "apply"}
+        ]
+        states_m = ""
+        for ln in out_m.splitlines():
+            if ln.startswith("states="):
+                states_m = ln[len("states="):]
+                break
+        if leaked_m or any(s in states_m.split(" > ") for s in ("verify", "ask", "apply")):
+            errors.append("work-line-ok: miss left act states=" + states_m + " out=" + out_m[:240])
+            return
+        done_m = ""
+        for ln in out_m.splitlines():
+            if ln.startswith("done="):
+                done_m = ln[len("done="):]
+                break
+        if done_m == "goal complete":
+            errors.append("work-line-ok: miss done=goal complete")
+            return
+        if rc_m == 0:
+            errors.append("work-line-ok: miss rc=0 done=" + done_m)
+            return
+        if done_m != DONE_TOOL_FAILED:
+            errors.append("work-line-ok: miss done=" + done_m)
+            return
+
+        hit = Path(tempfile.mkdtemp(prefix="lf-work-hit-"))
+        (hit / "README.md").write_text("# " + marker + "\nhello\n", encoding="utf-8")
+        rc_h, out_h = _run(hit)
+        work_h = [ln for ln in out_h.splitlines() if ln.startswith("work:")]
+        if not work_h:
+            errors.append("work-line-ok: hit missing work line got=" + out_h[:240])
+            return
+        if "ok: read README.md" not in work_h[0]:
+            errors.append("work-line-ok: hit work not ok read got=" + work_h[0][:200])
+            return
+        if marker in out_h:
+            errors.append("work-line-ok: dumped file contents")
+            return
+        leaked_h = [
+            ln.strip()
+            for ln in out_h.splitlines()
+            if ln.strip() in {"verify", "ask", "apply"}
+        ]
+        states_h = ""
+        for ln in out_h.splitlines():
+            if ln.startswith("states="):
+                states_h = ln[len("states="):]
+                break
+        if leaked_h or any(s in states_h.split(" > ") for s in ("verify", "ask", "apply")):
+            errors.append("work-line-ok: hit left act states=" + states_h)
+            return
+        if rc_h != 0:
+            errors.append("work-line-ok: hit rc=" + str(rc_h) + " out=" + out_h[:240])
+            return
+        done_h = ""
+        for ln in out_h.splitlines():
+            if ln.startswith("done="):
+                done_h = ln[len("done="):]
+                break
+        if done_h != "goal complete":
+            errors.append("work-line-ok: hit done=" + done_h)
+            return
+    finally:
+        if prev_root is None:
+            os.environ.pop("LOCAL_FOREMAN_ROOT", None)
+        else:
+            os.environ["LOCAL_FOREMAN_ROOT"] = prev_root
+        if prev_traj is None:
+            os.environ.pop("LOCAL_FOREMAN_TRAJ", None)
+        else:
+            os.environ["LOCAL_FOREMAN_TRAJ"] = prev_traj
+    print("work-line-ok")
+
+
 def _smoke_low_read(errors: list[str]) -> None:
     """Default mock (no script): LOW read of README stays act, even if missing."""
     tmp = Path(tempfile.mkdtemp(prefix="lf-low-read-"))
@@ -2553,6 +2670,12 @@ def _smoke_low_read(errors: list[str]) -> None:
         return
     if res.last_instruction:
         errors.append("low-read-ok: unexpected instruction=" + res.last_instruction)
+        return
+    if res.done_reason == "goal complete":
+        errors.append("low-read-ok: missed read marked complete")
+        return
+    if res.done_reason != DONE_TOOL_FAILED:
+        errors.append("low-read-ok: expected tool_failed got=" + res.done_reason)
         return
     print("low-read-ok")
 
@@ -2717,6 +2840,7 @@ def run_smoke() -> int:
     _smoke_confirm(root, errors)
     _smoke_bare(errors)
     _smoke_low_read(errors)
+    _smoke_work_line(errors)
 
     if errors:
         for e in errors:

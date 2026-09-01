@@ -2,6 +2,14 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.4.5] — 2026-09-01
+
+### Fixed
+
+- 一次性 CLI 打印每条已执行工具的一行 `work:`（traj `work` 的 observation / `ToolResult.line()`：成功读是 `ok: read README.md`，失败是 `fail:` 信息）。不把文件正文打到 stdout。
+- 唯一工具失败时不再把 `done=goal complete` 当成成功：`done=tool_failed` 且退出码 1。HIGH 连败两次进 ask 不变。LOW 读失败仍只走 `act`。
+- Smoke：`work-line-ok`；`low-read-ok` 按诚实退出更新。
+
 ## [0.4.4] — 2026-09-01
 
 ### Fixed

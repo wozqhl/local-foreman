@@ -202,6 +202,36 @@ class RunResult:
     traj_path: str = ""
 
 
+DONE_TOOL_FAILED = "tool_failed"
+
+
+def work_tool_outcomes(events: list[dict]) -> list[bool]:
+    """ok/fail of executed tools from work-event observation."""
+    out: list[bool] = []
+    for ev in events:
+        if ev.get("kind") != EVENT_WORK:
+            continue
+        obs = str(ev.get("observation") or "")
+        if obs.startswith("ok:"):
+            out.append(True)
+        elif obs.startswith("fail:"):
+            out.append(False)
+    return out
+
+
+def should_mark_tool_failed(result: RunResult) -> bool:
+    """Last tools all failed, never succeeded, and we never left LOW act."""
+    if any(s in {"ask", "verify", "apply"} for s in result.states):
+        return False
+    reason = result.done_reason or ""
+    if reason.startswith("halt") or reason.startswith("max_asks"):
+        return False
+    oks = work_tool_outcomes(result.events)
+    if not oks:
+        return False
+    return not any(oks)
+
+
 class ForemanLoop:
     def __init__(
         self,
@@ -581,9 +611,9 @@ class ForemanLoop:
         self._emit(
             result,
             EVENT_WORK,
-            f"{held.describe()} → {tr.short()}",
+            f"{held.describe()} → {tr.line()}",
             state=State.ACT.value,
-            observation=tr.short(),
+            observation=tr.line(),
         )
 
     def _speculate_readonly(
@@ -607,9 +637,9 @@ class ForemanLoop:
         self._emit(
             result,
             EVENT_WORK,
-            f"speculative {action.describe()} ({waiting}) → {tr.short()}",
+            f"speculative {action.describe()} ({waiting}) → {tr.line()}",
             state=waiting,
-            observation=tr.short(),
+            observation=tr.line(),
         )
 
     def _emit_lesson(self, result: RunResult, instruction: str, *, about: str = "") -> None:
@@ -829,9 +859,9 @@ class ForemanLoop:
                 self._emit(
                     result,
                     EVENT_WORK,
-                    f"critic-ok {action.describe()} → {tr.short()}",
+                    f"critic-ok {action.describe()} → {tr.line()}",
                     state=State.ACT.value,
-                    observation=tr.short(),
+                    observation=tr.line(),
                 )
                 return State.ACT.value, 0, pending, "", "none"
             if score.very_low:
@@ -894,9 +924,9 @@ class ForemanLoop:
                 self._emit(
                     result,
                     EVENT_WORK,
-                    f"critic-ok {action.describe()} → {tr.short()}",
+                    f"critic-ok {action.describe()} → {tr.line()}",
                     state=State.ACT.value,
-                    observation=tr.short(),
+                    observation=tr.line(),
                 )
                 return State.ACT.value, 0, pending, "", "none"
             # EAGLE-2: trusted table + high P(accept), not git-mutate → skip verify.
@@ -929,9 +959,9 @@ class ForemanLoop:
                 self._emit(
                     result,
                     EVENT_WORK,
-                    f"calibrate-skip {action.describe()} → {tr.short()}",
+                    f"calibrate-skip {action.describe()} → {tr.line()}",
                     state=State.ACT.value,
-                    observation=tr.short(),
+                    observation=tr.line(),
                     extra=extra,
                 )
                 return State.ACT.value, 0, pending, "", "none"
@@ -945,9 +975,9 @@ class ForemanLoop:
                 self._emit(
                     result,
                     EVENT_WORK,
-                    f"dsp-skip {action.describe()} → {tr.short()}",
+                    f"dsp-skip {action.describe()} → {tr.line()}",
                     state=State.ACT.value,
-                    observation=tr.short(),
+                    observation=tr.line(),
                     extra={"conf": raw_conf, "act": action.describe()},
                 )
                 return State.ACT.value, 0, pending, "", "none"
@@ -966,9 +996,9 @@ class ForemanLoop:
         self._emit(
             result,
             EVENT_WORK,
-            f"{action.describe()} → {tr.short()}",
+            f"{action.describe()} → {tr.line()}",
             state=State.ACT.value,
-            observation=tr.short(),
+            observation=tr.line(),
         )
         if tr.ok:
             return State.ACT.value, 0, pending, "", "none"
@@ -1421,4 +1451,6 @@ class ForemanLoop:
 
         if not result.done_reason:
             result.done_reason = "max_steps"
+        if should_mark_tool_failed(result):
+            result.done_reason = DONE_TOOL_FAILED
         return result

@@ -53,6 +53,8 @@
 - [x] Smoke：`bare-ok`
 - [x] LOW `read` / git-ro 失败不进 verify（30 秒「读 README」只走 act）
 - [x] Smoke：`low-read-ok`
+- [x] 一次性 CLI 打印工具 `work:` 行；唯一失败的工具不是 `goal complete`
+- [x] Smoke：`work-line-ok`
 
 ## 明确不做
 

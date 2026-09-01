@@ -6,7 +6,7 @@ import ast
 import difflib
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Union
 
@@ -26,6 +26,8 @@ class ToolResult:
     escalated: bool = False
     escalate_reason: Optional[str] = None
     risk: str = "none"
+    tool: str = ""
+    args: dict = field(default_factory=dict)
 
     def short(self) -> str:
         flag = "ok" if self.ok else "fail"
@@ -33,6 +35,15 @@ class ToolResult:
         if len(text) > 200:
             text = text[:197] + "..."
         return f"{flag}: {text}"
+
+    def line(self) -> str:
+        """One-line work text for traj/CLI. Never dumps file body."""
+        if not self.ok:
+            return self.short()
+        if (self.tool or "") == "read":
+            path = str((self.args or {}).get("path") or "")
+            return f"ok: read {path}" if path else "ok: read"
+        return self.short()
 
 
 def resolve_under_root(path: Union[str, Path], root: Optional[Path]) -> Optional[Path]:
@@ -364,13 +375,18 @@ def run_command(cmd: str, *, root: Optional[Path] = None, timeout: int = 30) -> 
 
 
 def execute(tool: str, args: dict, *, root: Optional[Path] = None) -> ToolResult:
+    args = dict(args or {})
     if tool == "read":
-        return read_file(str(args.get("path", "")), root=root)
-    if tool == "write":
-        return write_file(str(args.get("path", "")), str(args.get("content", "")), root=root)
-    if tool == "shell":
-        return run_command(str(args.get("cmd") or args.get("command") or ""), root=root)
-    return ToolResult(ok=False, output=f"unknown tool: {tool}")
+        tr = read_file(str(args.get("path", "")), root=root)
+    elif tool == "write":
+        tr = write_file(str(args.get("path", "")), str(args.get("content", "")), root=root)
+    elif tool == "shell":
+        tr = run_command(str(args.get("cmd") or args.get("command") or ""), root=root)
+    else:
+        tr = ToolResult(ok=False, output=f"unknown tool: {tool}")
+    tr.tool = tool
+    tr.args = args
+    return tr
 
 
 def draft_excerpt(path: str, content: str, *, limit: int = 240, root: Optional[Path] = None) -> str:
