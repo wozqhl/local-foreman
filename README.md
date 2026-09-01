@@ -6,7 +6,14 @@
 
 ## 30 秒跑起来（无需 API key）
 
-不下载模型、不调用真实 API：
+无需 API key，仅 mock：
+
+```bash
+python3 -m pip install 'git+https://github.com/wozqhl/local-foreman.git'
+python3 -m local_foreman --worker mock --coach mock "读 README"
+```
+
+贡献者先克隆后用可编辑安装：
 
 ```bash
 python3 -m pip install -e .

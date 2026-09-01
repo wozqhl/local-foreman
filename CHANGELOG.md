@@ -2,6 +2,12 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.4.2] — 2026-09-01
+
+### Added
+
+- README 30 秒入口增加无需克隆的 `pip install git+https://github.com/wozqhl/local-foreman.git`；可编辑安装仍给贡献者。
+
 ## [0.4.1] — 2026-09-01
 
 ### Added
