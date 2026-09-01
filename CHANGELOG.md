@@ -2,6 +2,13 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.5.0] — 2026-09-01
+
+### Added
+
+- `bench --live` / `LOCAL_FOREMAN_BENCH=live`：非 Darwin、缺 mlx-lm、或缺 `COACH_API_KEY` 时打印一行 `live-bench: skip (need Apple Silicon + mlx-lm + COACH_API_KEY)` 并以 0 退出。不 `import`/`load` mlx-lm，不构造 `MlxWorker`，不打教练。本盒不是 Apple Silicon；不宣称三项目标已达成。
+- Smoke：`live-bench-skip-ok`。原有 token 保留（含 `bench-ok` / `demo-root-ok` / `work-line-ok`）。
+
 ## [0.4.6] — 2026-09-01
 
 ### Added

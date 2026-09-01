@@ -43,7 +43,7 @@
 - [x] Smoke：`load-retry-ok`（注入 loader，不 load 权重）
 - [x] 多轮 history 改成 chat turns，而不是整段 JSON
 
-## 0.4 — 工具与守卫（当前）
+## 0.4 — 工具与守卫
 
 - [x] 更细的 git 只读白名单
 - [x] 工作区沙箱（限制 `write` / `shell` / `read` 出根目录）
@@ -57,6 +57,12 @@
 - [x] Smoke：`work-line-ok`
 - [x] cwd 没有 README.md 时用自带示例（不写用户磁盘）
 - [x] Smoke：`demo-root-ok`
+
+## 0.5 — 真实对照（当前）
+
+- [x] live bench skip on non-Darwin / missing mlx / missing COACH_API_KEY (no load, no API)
+- [x] Smoke：`live-bench-skip-ok`
+- [ ] Apple Silicon live numbers (not this box; do not invent scores)
 
 ## 明确不做
 

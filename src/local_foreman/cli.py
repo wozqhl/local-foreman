@@ -2877,6 +2877,91 @@ def _smoke_bare(errors: list[str]) -> None:
     print("bare-ok")
 
 
+def _smoke_live_bench_skip(errors: list[str]) -> None:
+    """Linux / missing mlx / missing key: live bench skips. No load, no API."""
+    from local_foreman.bench import LIVE_BENCH_SKIP, run_bench
+    from local_foreman import worker as worker_mod
+
+    n0 = len(errors)
+    constructed = {"n": 0}
+    loads = {"n": 0}
+    orig_init = worker_mod.MlxWorker.__init__
+    orig_step = worker_mod.MlxWorker.step
+    orig_loader = worker_mod.default_mlx_loader
+
+    def counting_init(self, *a, **k):
+        constructed["n"] += 1
+        return orig_init(self, *a, **k)
+
+    def counting_step(self, *a, **k):
+        loads["n"] += 1
+        raise AssertionError("MlxWorker.step must not run on live-bench skip")
+
+    def counting_loader(model_id):
+        loads["n"] += 1
+        raise AssertionError("default_mlx_loader must not run on live-bench skip")
+
+    prev_bench = os.environ.get("LOCAL_FOREMAN_BENCH")
+    prev_key = os.environ.get("COACH_API_KEY")
+    already_mlx = "mlx_lm" in sys.modules
+    worker_mod.MlxWorker.__init__ = counting_init  # type: ignore[method-assign]
+    worker_mod.MlxWorker.step = counting_step  # type: ignore[method-assign]
+    worker_mod.default_mlx_loader = counting_loader
+    try:
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            rc = run_bench(["--live"])
+        out = buf.getvalue()
+        if rc != 0:
+            errors.append("live-bench-skip-ok: --live rc=" + str(rc))
+        if LIVE_BENCH_SKIP not in out:
+            errors.append(
+                "live-bench-skip-ok: --live missing skip line: " + out[:200]
+            )
+        if "sk-fake" in out:
+            errors.append("live-bench-skip-ok: leaked key on --live")
+
+        os.environ["LOCAL_FOREMAN_BENCH"] = "live"
+        os.environ["COACH_API_KEY"] = "sk-fake"
+        buf2 = io.StringIO()
+        with contextlib.redirect_stdout(buf2), contextlib.redirect_stderr(buf2):
+            rc2 = run_bench([])
+        out2 = buf2.getvalue()
+        if rc2 != 0:
+            errors.append("live-bench-skip-ok: env live rc=" + str(rc2))
+        if LIVE_BENCH_SKIP not in out2:
+            errors.append(
+                "live-bench-skip-ok: env live missing skip: " + out2[:200]
+            )
+        if "sk-fake" in out2:
+            errors.append("live-bench-skip-ok: leaked fake key")
+        if constructed["n"] != 0:
+            errors.append(
+                "live-bench-skip-ok: MlxWorker constructed n=" + str(constructed["n"])
+            )
+        if loads["n"] != 0:
+            errors.append(
+                "live-bench-skip-ok: load/step called n=" + str(loads["n"])
+            )
+        if (not already_mlx) and ("mlx_lm" in sys.modules):
+            errors.append("live-bench-skip-ok: mlx_lm imported")
+    finally:
+        worker_mod.MlxWorker.__init__ = orig_init  # type: ignore[method-assign]
+        worker_mod.MlxWorker.step = orig_step  # type: ignore[method-assign]
+        worker_mod.default_mlx_loader = orig_loader
+        if prev_bench is None:
+            os.environ.pop("LOCAL_FOREMAN_BENCH", None)
+        else:
+            os.environ["LOCAL_FOREMAN_BENCH"] = prev_bench
+        if prev_key is None:
+            os.environ.pop("COACH_API_KEY", None)
+        else:
+            os.environ["COACH_API_KEY"] = prev_key
+
+    if len(errors) == n0:
+        print("live-bench-skip-ok")
+
+
 def run_smoke() -> int:
     root = Path(__file__).resolve().parents[2]
     errors = []
@@ -2981,6 +3066,7 @@ def run_smoke() -> int:
     _smoke_low_read(errors)
     _smoke_work_line(errors)
     _smoke_demo_root(errors)
+    _smoke_live_bench_skip(errors)
 
     if errors:
         for e in errors:

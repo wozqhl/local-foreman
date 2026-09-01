@@ -42,7 +42,7 @@ python3 -m local_foreman ui
 
 ## Mac + MLX（真本地模型）
 
-需要 **Apple Silicon**。Linux CI / 本开发盒没有 MLX，不要在这些机器上 `load` 权重。
+需要 **Apple Silicon**。Linux CI / 本开发盒没有 MLX，不要在这些机器上 `load` 权重。live bench 需要 Apple Silicon；`local-foreman bench` 仍是 mock；`bench --live` 在其他环境 skip。**尚未用数字证明**。
 
 ```bash
 python3 -m pip install -e '.[mlx]'
@@ -172,6 +172,7 @@ python -m local_foreman ui --no-demo
 | `LOCAL_FOREMAN_MAX_VERIFIES` | 整数 | 可选。核对硬上限。再核一次会超过则跳过 verify，留在本地。未设置不设上限 |
 | `LOCAL_FOREMAN_DEMOS` | 路径 | 可选。EcoAssistant demo 缓存 jsonl。默认 `<cwd>/.local-foreman/demos.jsonl`。只存本地 compact demo，不存教练改写 |
 | `LOCAL_FOREMAN_CONFIRM` | `0` \| `1` | 可选。HIGH git/remote `continue` 是否再确认。默认 TTY 开启；`0` / `--no-confirm` 跳过（CI/smoke） |
+| `LOCAL_FOREMAN_BENCH` | `live` | 可选。与 `bench --live` 相同：非 Darwin / 缺 mlx-lm / 缺 `COACH_API_KEY` 则 skip，不 load、不打教练 |
 
 CLI 的 `--worker` / `--coach` 会覆盖对应环境变量；`--max-tokens` 写入 `LOCAL_FOREMAN_MAX_TOKENS`。`--no-confirm` 写入 `LOCAL_FOREMAN_CONFIRM=0`。`--smoke` 会强制两边都是 mock。
 
@@ -211,6 +212,11 @@ load-retry-ok
 sandbox-ok
 git-ro-ok
 confirm-ok
+bare-ok
+low-read-ok
+work-line-ok
+demo-root-ok
+live-bench-skip-ok
 ```
 
 含义：
@@ -240,6 +246,11 @@ confirm-ok
 23. `sandbox-ok` — tempfile root 下：根内 write/shell 成功；`../` 与绝对路径越界 read/write/shell 硬拦（`sandbox:`，`escalated=False`）
 24. `git-ro-ok` — `git remote -v` / `config --get` / `stash list` / `tag -l` / `worktree list` 不 needs_ask；push/commit/remote add/config 写入仍升级
 25. `confirm-ok` — mock HIGH git-push：`confirm` 回 False 记 `user_denied`、不执行 push、不逃沙箱；回 True 走原来的 continue
+26. `bare-ok` — 无目标时打印中文 30 秒 mock 配方，不是 argparse 全文
+27. `low-read-ok` — 默认 MockWorker 读 README 失败只走 act，不进 verify
+28. `work-line-ok` — 一次性 CLI 打印 `work:` 行；唯一工具失败不是 `goal complete`
+29. `demo-root-ok` — cwd 没有 README.md 时用自带示例，不写用户磁盘
+30. `live-bench-skip-ok` — `bench --live` 在非 Apple Silicon 上 skip（不 load、不打教练）
 
 GitHub Actions（[`.github/workflows/smoke.yml`](.github/workflows/smoke.yml)）在 Ubuntu + Python 3.11 上只跑这一条 mock smoke。
 

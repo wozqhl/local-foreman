@@ -6,12 +6,16 @@ Measures the three product axes on the same fixtures:
   3. quality    (fixture pass rate on the same mock tasks — not a real-model score)
 
 Does not call a live coach, load MLX, or invent quality numbers.
+`--live` / LOCAL_FOREMAN_BENCH=live is gated: non-Darwin, missing mlx-lm, or
+empty COACH_API_KEY prints a skip line and returns 0. Never loads weights.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import os
+import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -27,6 +31,9 @@ from local_foreman.worker import MockWorker, WorkerAction
 WORKER_LATENCY_S = 0.005
 VERIFY_LATENCY_S = 0.040
 ASK_LATENCY_S = 0.080
+
+ENV_BENCH = "LOCAL_FOREMAN_BENCH"
+LIVE_BENCH_SKIP = "live-bench: skip (need Apple Silicon + mlx-lm + COACH_API_KEY)"
 
 
 @dataclass
@@ -478,12 +485,55 @@ def run_bench_suite(
     return report
 
 
+def _mlx_lm_available() -> bool:
+    """True if mlx-lm is importable. Uses find_spec so Linux never imports it."""
+    return importlib.util.find_spec("mlx_lm") is not None
+
+
+def _live_ready() -> bool:
+    """Apple Silicon + mlx-lm present + COACH_API_KEY. No import, no load, no API."""
+    if sys.platform != "darwin":
+        return False
+    if not _mlx_lm_available():
+        return False
+    if not (os.environ.get("COACH_API_KEY") or "").strip():
+        return False
+    return True
+
+
+def _want_live(*, flag: bool = False) -> bool:
+    if flag:
+        return True
+    return (os.environ.get(ENV_BENCH) or "").strip().lower() == "live"
+
+
+def _live_runner_stub() -> int:
+    """Unimplemented live path. Requires all three gates; never loads weights."""
+    print(LIVE_BENCH_SKIP)
+    return 0
+
+
+def _run_live_bench() -> int:
+    """Skip unless Darwin + mlx-lm + key. Stub even when ready: no load, no API."""
+    if not _live_ready():
+        print(LIVE_BENCH_SKIP)
+        return 0
+    return _live_runner_stub()
+
+
 def run_bench(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="local-foreman bench",
         description="Mock-only comparison: local-foreman lanes vs remote-only (time / tokens / pass).",
     )
-    parser.parse_args(argv)
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="request live MLX+coach bench (skips unless Apple Silicon + mlx-lm + COACH_API_KEY)",
+    )
+    args = parser.parse_args(argv)
+    if _want_live(flag=args.live):
+        return _run_live_bench()
     report = run_bench_suite()
     print(report.text())
     if report.errors:
