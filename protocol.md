@@ -18,7 +18,7 @@
 
 - **动作级核对要的是教练等价结果，不是 token 一字不差**（Leviathan / Speculative Actions / ISP）。accept 表示「教练自己也会走这一步」，不是字符串相等。
 - **不要每笔 write 都核对**：滚动 accept 率已经高时，跳过 verify，直接落盘（DSP）。率低（< 0.5）则下一笔 write 升到 `ask`（speculation tax）。
-- **一次工具失败先本地自修**（EcoAssistant），不要立刻 HIGH ask；**两次失败才 ask**。一次失败也可以进 MID 核对。
+- **一次工具失败先本地自修**（EcoAssistant），不要立刻 HIGH ask；**两次失败才 ask**。一次失败也可以进 MID 核对（write 等非 LOW）。**LOW 的 `read` / git 只读失败仍留在 `act`，不进 verify。**
 - **raw confidence 不是唯一门**（AutoMix）。路由先看工具种类（读留下、写核对），再叠加本地检查 / 校准率。
 - **滚动校准再路由**（EAGLE-2）：同一条 traj 上用最近 `coach_verdict` 估 P(accept | conf_bucket, act_type)。样本够（≥8）且 P≥0.9、又不是 git-mutate，则跳过 verify。校准与 raw conf 长期分歧时，只在原四条 HIGH 命中才 ask，不另造原因。样本不足则仍走 DSP 0.75 skip 与 tax <0.5。
 - **先本地自核再花钱**（AutoMix）：worker 或廉价检查给 pending claim 打 p。p 很低两次且不是升级条件，则不要把无望的活送给教练烧 token；p 高且已有 CRITIC 本地检查则留在 LOW。

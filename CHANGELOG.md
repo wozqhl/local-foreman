@@ -2,6 +2,13 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.4.4] — 2026-09-01
+
+### Fixed
+
+- LOW `read` / git 只读一次失败不再进 `verify`。cwd 没有 README.md 时，陌生人 30 秒 mock（`python3 -m local_foreman "读 README"`）只走 `act`，0 教练 token。MID write 核对与 HIGH 四条不变。
+- Smoke：`low-read-ok`（默认 MockWorker，无脚本）。
+
 ## [0.4.3] — 2026-09-01
 
 ### Added

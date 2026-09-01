@@ -51,6 +51,8 @@
 - [x] Smoke：`sandbox-ok` / `git-ro-ok` / `confirm-ok`
 - [x] 裸 CLI 无目标时给中文 30 秒 mock 配方（非 argparse 全文）；默认 mock 且 TTY 时提示 demo
 - [x] Smoke：`bare-ok`
+- [x] LOW `read` / git-ro 失败不进 verify（30 秒「读 README」只走 act）
+- [x] Smoke：`low-read-ok`
 
 ## 明确不做
 

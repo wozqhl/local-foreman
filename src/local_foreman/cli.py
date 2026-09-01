@@ -2519,6 +2519,44 @@ def _smoke_confirm(root: Path, errors: list[str]) -> None:
         print("confirm-ok")
 
 
+
+def _smoke_low_read(errors: list[str]) -> None:
+    """Default mock (no script): LOW read of README stays act, even if missing."""
+    tmp = Path(tempfile.mkdtemp(prefix="lf-low-read-"))
+    worker = MockWorker()
+    coach = MockCoach()
+    res = ForemanLoop(
+        worker=worker,
+        coach=coach,
+        root=tmp,
+        max_steps=6,
+        persist=False,
+        idle=False,
+    ).run("读 README")
+    if "act" not in res.states:
+        errors.append("low-read-ok: never entered act states=" + str(res.states))
+        return
+    leaked = [s for s in res.states if s in {"verify", "ask", "apply"}]
+    if leaked:
+        errors.append("low-read-ok: LOW read left act states=" + str(res.states))
+        return
+    if coach.calls:
+        errors.append("low-read-ok: MockCoach.calls=" + str(len(coach.calls)))
+        return
+    if coach.verify_calls:
+        errors.append(
+            "low-read-ok: verify_calls=" + str(len(coach.verify_calls))
+        )
+        return
+    if not any("read" in (h.get("action") or "") for h in res.history):
+        errors.append("low-read-ok: did not execute a read")
+        return
+    if res.last_instruction:
+        errors.append("low-read-ok: unexpected instruction=" + res.last_instruction)
+        return
+    print("low-read-ok")
+
+
 def _smoke_bare(errors: list[str]) -> None:
     """Bare CLI: Chinese 30s recipe on no-goal; mock TTY line stays off in smoke."""
     out = io.StringIO()
@@ -2678,6 +2716,7 @@ def run_smoke() -> int:
     _smoke_git_ro(errors)
     _smoke_confirm(root, errors)
     _smoke_bare(errors)
+    _smoke_low_read(errors)
 
     if errors:
         for e in errors:

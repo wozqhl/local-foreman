@@ -988,7 +988,8 @@ class ForemanLoop:
             )
             return State.ASK.value, fail_streak, pending, pending_reason, pending_risk
         # MID: one failure, not yet twice. Idle skips verify.
-        if from_idle:
+        # LOW read / git-ro stay in act even on a miss — not a draft to verify.
+        if from_idle or is_readonly_speculate(action.tool or "", action.args or {}):
             return State.ACT.value, fail_streak, pending, "", "none"
         score = self._self_verify(result, action, goal)
         if score.very_low:
