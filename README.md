@@ -33,6 +33,8 @@
 
 循环：`act` →（low 留下 / verify / ask）→ `apply` → `act`。HIGH 的 `apply` **必须**把教练的 `instruction` 注入下一轮 Worker system prompt。`halt` 结束进程并返回非 0。MID 的 write 在 `accept` 前不落盘。
 
+设定了工作区 `root` 时，`read` / `write` / `shell` 不能逃出根目录（绝对路径或 `..` 会本地硬拦，前缀 `sandbox:`，不问教练）。persist 长驻 Worker 也依赖这一层沙箱。
+
 HIGH 升级只发生在：同一工具连败两次、即将 mutate git / 写 remote、用户要求 review、Worker 发出 `unsure`。
 
 发给教练的不是仓库 dump，而是一句说清楚的问题：失败了什么、试过什么、现在需要什么。MID 写操作先 hold，`verify` 票是 claim+draft，`accept` 才落盘。事件日志是一条轨迹：`work` → `stuck`（带问题）→ `asked_coach` → `coach_instruction` → `resumed`，核对再追加 `verified_coach` / `coach_verdict`（不计 ask），空转再追加 `thought`，需要时还有 `retrieved` / `idle_act` / `lesson`。看板 SSE 和磁盘 jsonl 共用这一条，不另起一份日志。
@@ -202,6 +204,8 @@ calibrate-ok
 think-strip-ok
 chat-turns-ok
 load-retry-ok
+sandbox-ok
+git-ro-ok
 ```
 
 含义：
@@ -228,6 +232,8 @@ load-retry-ok
 20. `think-strip-ok` — 带 `<think>` 的夹具经 `parse_action` 得到 tool 而不是 unsure；`LOCAL_FOREMAN_MAX_TOKENS` 读入 MlxWorker / factory（不 load）
 21. `chat-turns-ok` — history 拆成 assistant/user chat turns（非 JSON dump）；不 load、不打教练
 22. `load-retry-ok` — 注入假 loader：失败两次后成功 / 始终失败 / ImportError 提示；不 load 权重、不打教练
+23. `sandbox-ok` — tempfile root 下：根内 write/shell 成功；`../` 与绝对路径越界 read/write/shell 硬拦（`sandbox:`，`escalated=False`）
+24. `git-ro-ok` — `git remote -v` / `config --get` / `stash list` / `tag -l` / `worktree list` 不 needs_ask；push/commit/remote add/config 写入仍升级
 
 GitHub Actions（[`.github/workflows/smoke.yml`](.github/workflows/smoke.yml)）在 Ubuntu + Python 3.11 上只跑这一条 mock smoke。
 

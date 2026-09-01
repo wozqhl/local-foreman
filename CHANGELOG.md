@@ -2,6 +2,14 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.4.0] — 2026-09-01
+
+### Added
+
+- 工作区沙箱：`root` 设定时 `read` / `write` / `shell`（及 `draft_diff`）经 `resolve_under_root` 限制在工作区根内；越界硬失败（`sandbox:` 前缀，`escalated=False`），不问教练。shell 对绝对路径、带 `..` 的相对路径、简单 `cd` 与常见重定向做 pragmatic 检查；cwd 仍为 root。
+- 更细的 git 只读白名单：`git remote -v|show|get-url`、`git config --get|--list|-l`、`git stash list|show`、`git tag`/`-l`/`--list`、`git worktree list`、只读 `git branch` 不计入 mutate / needs_ask；push/commit/config 写入/remote add 等仍升级。
+- Smoke：`sandbox-ok`、`git-ro-ok`。原有 token 保留。不宣称三项目标已达成。
+
 ## [0.3.0] — 2026-08-31
 
 ### Added

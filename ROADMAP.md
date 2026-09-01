@@ -34,7 +34,7 @@
 - [x] EAGLE-2 滚动校准（P(accept|conf_bucket,act_type) 够样本才跳过 verify）
 - [x] Smoke：`calibrate-ok`
 
-## 0.3 — Worker 更稳（当前）
+## 0.3 — Worker 更稳
 
 - [x] 把 Qwen3 thinking 块从输出里剥干净（即使模板没关）
 - [x] 可配置 `max_tokens` / 采样
@@ -43,11 +43,12 @@
 - [x] Smoke：`load-retry-ok`（注入 loader，不 load 权重）
 - [x] 多轮 history 改成 chat turns，而不是整段 JSON
 
-## 0.4 — 工具与守卫
+## 0.4 — 工具与守卫（当前）
 
-- [ ] 更细的 git 只读白名单
-- [ ] 工作区沙箱（限制 `write` / `shell` 出根目录）
+- [x] 更细的 git 只读白名单
+- [x] 工作区沙箱（限制 `write` / `shell` / `read` 出根目录）
 - [ ] 用户确认钩子（终端里对 `halt` 以外的高风险 continue 再确认一次）
+- [x] Smoke：`sandbox-ok` / `git-ro-ok`
 
 ## 明确不做
 

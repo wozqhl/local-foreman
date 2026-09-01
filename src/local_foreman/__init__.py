@@ -1,5 +1,5 @@
 """Local Foreman: Mac-first agent. Local small model works; remote coach only guides."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 STATES = ("act", "verify", "ask", "apply")

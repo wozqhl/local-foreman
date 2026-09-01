@@ -2142,6 +2142,166 @@ def _smoke_load_retry(errors: list[str]) -> None:
         print("load-retry-ok")
 
 
+
+def _smoke_sandbox(errors: list[str]) -> None:
+    """Workspace sandbox: write/read/shell stay under root when set."""
+    from local_foreman.tools import read_file, run_command, write_file
+
+    n0 = len(errors)
+    with tempfile.TemporaryDirectory(prefix="lf-sandbox-") as td:
+        root = Path(td)
+        inside = write_file("inside.txt", "hello", root=root)
+        if not inside.ok or inside.escalated:
+            errors.append(
+                "sandbox-ok: write inside failed: "
+                + inside.output
+                + " escalated="
+                + str(inside.escalated)
+            )
+        if not (root / "inside.txt").is_file():
+            errors.append("sandbox-ok: inside.txt not on disk")
+
+        esc_rel = write_file("../escape.txt", "nope", root=root)
+        if esc_rel.ok or esc_rel.escalated or not esc_rel.output.startswith("sandbox:"):
+            errors.append(
+                "sandbox-ok: ../escape write expected sandbox block got ok="
+                + str(esc_rel.ok)
+                + " escalated="
+                + str(esc_rel.escalated)
+                + " out="
+                + esc_rel.output[:120]
+            )
+        if (root.parent / "escape.txt").exists():
+            errors.append("sandbox-ok: ../escape.txt was written outside root")
+
+        outside_abs = Path(tempfile.gettempdir()) / ("lf-sandbox-escape-" + root.name + ".txt")
+        esc_abs = write_file(str(outside_abs), "nope", root=root)
+        if esc_abs.ok or esc_abs.escalated or not esc_abs.output.startswith("sandbox:"):
+            errors.append(
+                "sandbox-ok: abs write expected sandbox block got ok="
+                + str(esc_abs.ok)
+                + " escalated="
+                + str(esc_abs.escalated)
+                + " out="
+                + esc_abs.output[:120]
+            )
+
+        # Ensure an outside file exists for read probe.
+        probe = Path(tempfile.gettempdir()) / ("lf-sandbox-probe-" + root.name + ".txt")
+        probe.write_text("secret", encoding="utf-8")
+        try:
+            rd = read_file(str(probe), root=root)
+            if rd.ok or rd.escalated or not rd.output.startswith("sandbox:"):
+                errors.append(
+                    "sandbox-ok: abs read expected sandbox block got ok="
+                    + str(rd.ok)
+                    + " escalated="
+                    + str(rd.escalated)
+                    + " out="
+                    + rd.output[:120]
+                )
+            rd2 = read_file("../escape.txt", root=root)
+            if rd2.ok or rd2.escalated or not rd2.output.startswith("sandbox:"):
+                errors.append(
+                    "sandbox-ok: ../ read expected sandbox block got ok="
+                    + str(rd2.ok)
+                    + " escalated="
+                    + str(rd2.escalated)
+                    + " out="
+                    + rd2.output[:120]
+                )
+        finally:
+            probe.unlink(missing_ok=True)
+
+        sh_out = run_command("echo hi > ../out.txt", root=root)
+        if sh_out.ok or sh_out.escalated or not sh_out.output.startswith("sandbox:"):
+            errors.append(
+                "sandbox-ok: redirect ../out.txt expected sandbox got ok="
+                + str(sh_out.ok)
+                + " escalated="
+                + str(sh_out.escalated)
+                + " out="
+                + sh_out.output[:120]
+            )
+        if (root.parent / "out.txt").exists():
+            errors.append("sandbox-ok: ../out.txt was created by shell")
+
+        sh_cat = run_command("cat /etc/passwd", root=root)
+        if sh_cat.ok or sh_cat.escalated or not sh_cat.output.startswith("sandbox:"):
+            errors.append(
+                "sandbox-ok: cat /etc/passwd expected sandbox got ok="
+                + str(sh_cat.ok)
+                + " escalated="
+                + str(sh_cat.escalated)
+                + " out="
+                + sh_cat.output[:120]
+            )
+
+        sh_ok = run_command("echo hi > inside2.txt", root=root)
+        if not sh_ok.ok or sh_ok.escalated:
+            errors.append(
+                "sandbox-ok: echo inside2.txt failed: "
+                + sh_ok.output
+                + " escalated="
+                + str(sh_ok.escalated)
+            )
+        if not (root / "inside2.txt").is_file():
+            errors.append("sandbox-ok: inside2.txt not created")
+
+    if len(errors) == n0:
+        print("sandbox-ok")
+
+
+def _smoke_git_ro(errors: list[str]) -> None:
+    """Finer git read-only whitelist: unit checks on is_git_ro / mutate / needs_ask."""
+    from local_foreman.tools import is_git_mutate, is_git_ro, needs_ask
+
+    n0 = len(errors)
+    ro_cmds = [
+        "git remote -v",
+        "git config --get user.name",
+        "git stash list",
+        "git tag -l",
+        "git worktree list",
+    ]
+    for cmd in ro_cmds:
+        ask, _reason, _risk = needs_ask("shell", {"cmd": cmd})
+        if ask or is_git_mutate(cmd) or not is_git_ro(cmd):
+            errors.append(
+                "git-ro-ok: expected RO for "
+                + repr(cmd)
+                + " ask="
+                + str(ask)
+                + " mutate="
+                + str(is_git_mutate(cmd))
+                + " ro="
+                + str(is_git_ro(cmd))
+            )
+
+    mut_cmds = [
+        "git push",
+        "git commit -am x",
+        "git remote add origin x",
+        "git config user.email x",
+    ]
+    for cmd in mut_cmds:
+        ask, _reason, _risk = needs_ask("shell", {"cmd": cmd})
+        if not ask or not is_git_mutate(cmd) or is_git_ro(cmd):
+            errors.append(
+                "git-ro-ok: expected mutate/ask for "
+                + repr(cmd)
+                + " ask="
+                + str(ask)
+                + " mutate="
+                + str(is_git_mutate(cmd))
+                + " ro="
+                + str(is_git_ro(cmd))
+            )
+
+    if len(errors) == n0:
+        print("git-ro-ok")
+
+
 def run_smoke() -> int:
     root = Path(__file__).resolve().parents[2]
     errors = []
@@ -2238,6 +2398,8 @@ def run_smoke() -> int:
     _smoke_think_strip(errors)
     _smoke_chat_turns(errors)
     _smoke_load_retry(errors)
+    _smoke_sandbox(errors)
+    _smoke_git_ro(errors)
 
     if errors:
         for e in errors:
