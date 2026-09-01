@@ -10,17 +10,19 @@
 
 ```bash
 python3 -m pip install 'git+https://github.com/wozqhl/local-foreman.git'
-python3 -m local_foreman --worker mock --coach mock "读 README"
+python3 -m local_foreman "读 README"
 ```
+
+可选显式：`python3 -m local_foreman --worker mock --coach mock "读 README"`。
 
 贡献者先克隆后用可编辑安装：
 
 ```bash
 python3 -m pip install -e .
-python3 -m local_foreman --worker mock --coach mock "读 README"
+python3 -m local_foreman "读 README"
 ```
 
-等价：`pip install -e .` 之后 `local-foreman --worker mock --coach mock "读 README"`。
+等价：`pip install -e .` 之后 `local-foreman "读 README"`。
 
 完整 mock smoke（同样无 key）：
 

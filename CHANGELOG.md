@@ -2,6 +2,13 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.4.3] — 2026-09-01
+
+### Added
+
+- 无目标时打印中文 30 秒 mock 配方（`pip install git+https://...` 与 `python3 -m local_foreman "读 README"`），不再把 argparse 全文当主提示。默认 mock 且 stderr 是 TTY 时打一行 demo 提示；smoke 非 TTY 保持安静。
+- Smoke：`bare-ok`。
+
 ## [0.4.2] — 2026-09-01
 
 ### Added

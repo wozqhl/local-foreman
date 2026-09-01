@@ -49,6 +49,8 @@
 - [x] 工作区沙箱（限制 `write` / `shell` / `read` 出根目录）
 - [x] 用户确认钩子（终端里对 `halt` 以外的高风险 continue 再确认一次）
 - [x] Smoke：`sandbox-ok` / `git-ro-ok` / `confirm-ok`
+- [x] 裸 CLI 无目标时给中文 30 秒 mock 配方（非 argparse 全文）；默认 mock 且 TTY 时提示 demo
+- [x] Smoke：`bare-ok`
 
 ## 明确不做
 

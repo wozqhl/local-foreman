@@ -59,6 +59,28 @@ def _root() -> Path:
     return Path(env) if env else Path.cwd()
 
 
+_BARE_RECIPE = (
+    "30 秒跑起来：\n"
+    "\n"
+    "  python3 -m pip install 'git+https://github.com/wozqhl/local-foreman.git'\n"
+    "  python3 -m local_foreman \"读 README\"\n"
+    "\n"
+    "默认 mock，无需 API key。Mac MLX 见 README。\n"
+)
+_MOCK_TTY_LINE = "mock（无 API key；真模型见 README Mac + MLX）"
+
+
+def _default_mock_backends() -> bool:
+    worker = (os.environ.get("LOCAL_FOREMAN_WORKER") or "mock").strip().lower()
+    coach = (os.environ.get("LOCAL_FOREMAN_COACH") or "mock").strip().lower()
+    return worker == "mock" and coach == "mock"
+
+
+def _stderr_is_tty() -> bool:
+    isatty = getattr(sys.stderr, "isatty", None)
+    return bool(isatty and isatty())
+
+
 def run_goal(
     goal: str,
     *,
@@ -72,6 +94,8 @@ def run_goal(
 
     if persist is None:
         persist = env_flag(ENV_PERSIST)
+    if _default_mock_backends() and _stderr_is_tty():
+        print(_MOCK_TTY_LINE, file=sys.stderr)
     loop = ForemanLoop(
         root=_root(),
         user_review=user_review,
@@ -2495,6 +2519,64 @@ def _smoke_confirm(root: Path, errors: list[str]) -> None:
         print("confirm-ok")
 
 
+def _smoke_bare(errors: list[str]) -> None:
+    """Bare CLI: Chinese 30s recipe on no-goal; mock TTY line stays off in smoke."""
+    out = io.StringIO()
+    err = io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = main([])
+    if rc != 2:
+        errors.append("bare-ok: main([]) rc=" + str(rc))
+        return
+    captured = out.getvalue() + "\n" + err.getvalue()
+    pip_url = "git+https://github.com/wozqhl/local-foreman.git"
+    if pip_url not in captured:
+        errors.append("bare-ok: recipe missing pip git+ URL got=" + captured[:240])
+        return
+    if "python3 -m local_foreman" not in captured:
+        errors.append("bare-ok: recipe missing python3 -m local_foreman got=" + captured[:240])
+        return
+    rec_ok = any(
+        "python3 -m local_foreman" in line and "--worker" not in line
+        for line in captured.splitlines()
+    )
+    if not rec_ok:
+        errors.append("bare-ok: recipe requires --worker")
+        return
+
+    prev_traj = os.environ.get("LOCAL_FOREMAN_TRAJ")
+    tmp = Path(tempfile.mkdtemp(prefix="lf-bare-")) / "traj.jsonl"
+    os.environ["LOCAL_FOREMAN_WORKER"] = "mock"
+    os.environ["LOCAL_FOREMAN_COACH"] = "mock"
+    os.environ[ENV_CONFIRM] = "0"
+    os.environ["LOCAL_FOREMAN_PERSIST"] = "0"
+    os.environ["LOCAL_FOREMAN_TRAJ"] = str(tmp)
+    out2 = io.StringIO()
+    err2 = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out2), contextlib.redirect_stderr(err2):
+            rc2 = main(["读 README"])
+    finally:
+        if prev_traj is None:
+            os.environ.pop("LOCAL_FOREMAN_TRAJ", None)
+        else:
+            os.environ["LOCAL_FOREMAN_TRAJ"] = prev_traj
+    if rc2 != 0:
+        errors.append(
+            "bare-ok: main(goal) rc="
+            + str(rc2)
+            + " err="
+            + err2.getvalue()[:240]
+            + " out="
+            + out2.getvalue()[:240]
+        )
+        return
+    if _MOCK_TTY_LINE in err2.getvalue():
+        errors.append("bare-ok: TTY mock line leaked on non-tty stderr")
+        return
+    print("bare-ok")
+
+
 def run_smoke() -> int:
     root = Path(__file__).resolve().parents[2]
     errors = []
@@ -2595,6 +2677,7 @@ def run_smoke() -> int:
     _smoke_sandbox(errors)
     _smoke_git_ro(errors)
     _smoke_confirm(root, errors)
+    _smoke_bare(errors)
 
     if errors:
         for e in errors:
@@ -2674,7 +2757,7 @@ def main(argv=None) -> int:
 
     goal = " ".join(args.goal).strip()
     if not goal:
-        parser.print_help()
+        print(_BARE_RECIPE, end="")
         return 2
     try:
         return run_goal(
