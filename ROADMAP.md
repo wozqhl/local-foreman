@@ -55,6 +55,8 @@
 - [x] Smoke：`low-read-ok`
 - [x] 一次性 CLI 打印工具 `work:` 行；唯一失败的工具不是 `goal complete`
 - [x] Smoke：`work-line-ok`
+- [x] cwd 没有 README.md 时用自带示例（不写用户磁盘）
+- [x] Smoke：`demo-root-ok`
 
 ## 明确不做
 

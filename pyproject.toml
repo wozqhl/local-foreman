@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-foreman"
-version = "0.4.5"
+version = "0.4.6"
 description = "Mac-first local agent: faster + quality-parity + fewer tokens via risk lanes"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -35,4 +35,4 @@ local-foreman = "local_foreman.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-local_foreman = ["ui.html"]
+local_foreman = ["ui.html", "demo_root/README.md"]

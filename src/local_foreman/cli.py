@@ -61,6 +61,24 @@ def _root() -> Path:
     return Path(env) if env else Path.cwd()
 
 
+def packaged_demo_root() -> Path:
+    return Path(__file__).resolve().with_name("demo_root")
+
+
+_DEMO_FALLBACK_LINE = "demo: 当前目录没有 README.md，改用自带示例"
+
+
+def _goal_root() -> tuple[Path, bool]:
+    """One-shot workspace root. Never override an explicit LOCAL_FOREMAN_ROOT."""
+    env = os.environ.get("LOCAL_FOREMAN_ROOT")
+    if env:
+        return Path(env), False
+    cwd = Path.cwd()
+    if (cwd / "README.md").is_file():
+        return cwd, False
+    return packaged_demo_root(), True
+
+
 _BARE_RECIPE = (
     "30 秒跑起来：\n"
     "\n"
@@ -104,10 +122,13 @@ def run_goal(
 
     if persist is None:
         persist = env_flag(ENV_PERSIST)
+    root, used_demo = _goal_root()
+    if used_demo:
+        print(_DEMO_FALLBACK_LINE, file=sys.stderr)
     if _default_mock_backends() and _stderr_is_tty():
         print(_MOCK_TTY_LINE, file=sys.stderr)
     loop = ForemanLoop(
-        root=_root(),
+        root=root,
         user_review=user_review,
         max_steps=max_steps,
         on_state=on_state,
@@ -2637,6 +2658,124 @@ def _smoke_work_line(errors: list[str]) -> None:
     print("work-line-ok")
 
 
+def _smoke_demo_root(errors: list[str]) -> None:
+    """Packaged demo README when cwd has none; do not write into empty cwd."""
+    prev_root = os.environ.get("LOCAL_FOREMAN_ROOT")
+    prev_traj = os.environ.get("LOCAL_FOREMAN_TRAJ")
+    prev_cwd = os.getcwd()
+
+    demo = packaged_demo_root()
+    if not (demo / "README.md").is_file():
+        errors.append("demo-root-ok: packaged README.md missing at " + str(demo))
+        return
+
+    def _restore() -> None:
+        os.chdir(prev_cwd)
+        if prev_root is None:
+            os.environ.pop("LOCAL_FOREMAN_ROOT", None)
+        else:
+            os.environ["LOCAL_FOREMAN_ROOT"] = prev_root
+        if prev_traj is None:
+            os.environ.pop("LOCAL_FOREMAN_TRAJ", None)
+        else:
+            os.environ["LOCAL_FOREMAN_TRAJ"] = prev_traj
+
+    def _run(cwd: Path) -> tuple[int, str]:
+        os.environ.pop("LOCAL_FOREMAN_ROOT", None)
+        os.environ["LOCAL_FOREMAN_WORKER"] = "mock"
+        os.environ["LOCAL_FOREMAN_COACH"] = "mock"
+        os.environ[ENV_CONFIRM] = "0"
+        os.environ["LOCAL_FOREMAN_PERSIST"] = "0"
+        os.environ["LOCAL_FOREMAN_TRAJ"] = str(
+            Path(tempfile.mkdtemp(prefix="lf-demo-root-traj-")) / "traj.jsonl"
+        )
+        os.chdir(cwd)
+        out = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = run_goal(
+                "read the readme",
+                max_steps=6,
+                persist=False,
+                require_confirm=False,
+            )
+        return rc, out.getvalue() + "\n" + err.getvalue()
+
+    try:
+        miss = Path(tempfile.mkdtemp(prefix="lf-demo-root-miss-"))
+        rc_m, out_m = _run(miss)
+        os.chdir(prev_cwd)
+        if rc_m != 0:
+            errors.append("demo-root-ok: miss rc=" + str(rc_m) + " out=" + out_m[:240])
+            return
+        work_m = [ln for ln in out_m.splitlines() if ln.startswith("work:")]
+        if not work_m:
+            errors.append("demo-root-ok: miss missing work line got=" + out_m[:240])
+            return
+        if "ok: read README.md" not in work_m[0]:
+            errors.append("demo-root-ok: miss work not ok read got=" + work_m[0][:200])
+            return
+        if _DEMO_FALLBACK_LINE not in out_m:
+            errors.append("demo-root-ok: miss missing demo line got=" + out_m[:240])
+            return
+        leaked_m = [
+            ln.strip()
+            for ln in out_m.splitlines()
+            if ln.strip() in {"verify", "ask", "apply"}
+        ]
+        states_m = ""
+        for ln in out_m.splitlines():
+            if ln.startswith("states="):
+                states_m = ln[len("states="):]
+                break
+        if leaked_m or any(s in states_m.split(" > ") for s in ("verify", "ask", "apply")):
+            errors.append(
+                "demo-root-ok: miss left act states=" + states_m + " out=" + out_m[:240]
+            )
+            return
+        if (miss / "README.md").exists():
+            errors.append("demo-root-ok: wrote README.md into empty cwd")
+            return
+
+        hit = Path(tempfile.mkdtemp(prefix="lf-demo-root-hit-"))
+        (hit / "README.md").write_text("# cwd readme\nhello\n", encoding="utf-8")
+        rc_h, out_h = _run(hit)
+        os.chdir(prev_cwd)
+        if rc_h != 0:
+            errors.append("demo-root-ok: hit rc=" + str(rc_h) + " out=" + out_h[:240])
+            return
+        work_h = [ln for ln in out_h.splitlines() if ln.startswith("work:")]
+        if not work_h:
+            errors.append("demo-root-ok: hit missing work line got=" + out_h[:240])
+            return
+        if "ok: read README.md" not in work_h[0]:
+            errors.append("demo-root-ok: hit work not ok read got=" + work_h[0][:200])
+            return
+        if _DEMO_FALLBACK_LINE in out_h:
+            errors.append("demo-root-ok: hit used demo fallback")
+            return
+        if any(ln.startswith("demo:") for ln in out_h.splitlines()):
+            errors.append("demo-root-ok: hit leaked demo: line")
+            return
+        leaked_h = [
+            ln.strip()
+            for ln in out_h.splitlines()
+            if ln.strip() in {"verify", "ask", "apply"}
+        ]
+        states_h = ""
+        for ln in out_h.splitlines():
+            if ln.startswith("states="):
+                states_h = ln[len("states="):]
+                break
+        if leaked_h or any(s in states_h.split(" > ") for s in ("verify", "ask", "apply")):
+            errors.append("demo-root-ok: hit left act states=" + states_h)
+            return
+    finally:
+        _restore()
+    print("demo-root-ok")
+
+
+
 def _smoke_low_read(errors: list[str]) -> None:
     """Default mock (no script): LOW read of README stays act, even if missing."""
     tmp = Path(tempfile.mkdtemp(prefix="lf-low-read-"))
@@ -2841,6 +2980,7 @@ def run_smoke() -> int:
     _smoke_bare(errors)
     _smoke_low_read(errors)
     _smoke_work_line(errors)
+    _smoke_demo_root(errors)
 
     if errors:
         for e in errors:

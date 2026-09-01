@@ -2,6 +2,13 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.4.6] — 2026-09-01
+
+### Added
+
+- 一次性 CLI：未设 `LOCAL_FOREMAN_ROOT` 且 cwd 没有 README.md 时，改用包内自带示例工作区（不写用户磁盘），并打一行 `demo:`。不按目标字符串特判。
+- Smoke：`demo-root-ok`。`work-line-ok` 仍可用 `LOCAL_FOREMAN_ROOT` 指向空目录测诚实失败。
+
 ## [0.4.5] — 2026-09-01
 
 ### Fixed

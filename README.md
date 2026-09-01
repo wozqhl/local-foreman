@@ -13,6 +13,8 @@ python3 -m pip install 'git+https://github.com/wozqhl/local-foreman.git'
 python3 -m local_foreman "读 README"
 ```
 
+当前目录没有 README.md 时用自带示例，不写你的磁盘。
+
 可选显式：`python3 -m local_foreman --worker mock --coach mock "读 README"`。
 
 贡献者先克隆后用可编辑安装：
