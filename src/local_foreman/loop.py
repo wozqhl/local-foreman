@@ -535,6 +535,61 @@ class ForemanLoop:
             return
         self.traj = Trajectory(self.traj_path, goal=goal, cwd=self.root)
 
+    def _restore_from_traj(self, result: Optional[RunResult] = None) -> None:
+        """Reload coach_instruction / last_problem from on-disk traj (read-only).
+
+        Newest-first. Restore the latest non-empty coach_instruction unless a
+        newer user_denied follows it (do not override a user refusal). Also
+        restore the latest non-empty problem (prefer stuck / coach_instruction /
+        asked_coach). Never invent memory, never call the coach, never rewrite
+        the jsonl.
+        """
+        if not self.persist or self.traj is None or not self.traj.entries:
+            return
+        entries = self.traj.entries
+        instruction = ""
+        instr_idx: Optional[int] = None
+        for i in range(len(entries) - 1, -1, -1):
+            ev = entries[i]
+            if ev.get("kind") != EVENT_COACH_INSTRUCTION:
+                continue
+            text = str(ev.get("instruction") or ev.get("message") or "").strip()
+            if text:
+                instruction = text
+                instr_idx = i
+                break
+        denied_after = False
+        if instr_idx is not None:
+            for j in range(instr_idx + 1, len(entries)):
+                if entries[j].get("kind") == EVENT_USER_DENIED:
+                    denied_after = True
+                    break
+        if instruction and not denied_after:
+            self.coach_instruction = instruction
+            if result is not None:
+                result.last_instruction = instruction
+
+        preferred = {EVENT_STUCK, EVENT_COACH_INSTRUCTION, EVENT_ASKED_COACH}
+        problem = ""
+        for i in range(len(entries) - 1, -1, -1):
+            ev = entries[i]
+            if ev.get("kind") not in preferred:
+                continue
+            p = str(ev.get("problem") or "").strip()
+            if p:
+                problem = p
+                break
+        if not problem:
+            for i in range(len(entries) - 1, -1, -1):
+                p = str(entries[i].get("problem") or "").strip()
+                if p:
+                    problem = p
+                    break
+        if problem:
+            self.last_problem = problem
+            if result is not None:
+                result.last_problem = problem
+
     def _coach_ask_count(self, result: RunResult) -> int:
         """asked_coach on this traj (disk) or this-run events if persist is off."""
         entries = self.traj.entries if self.traj is not None else result.events
@@ -1117,6 +1172,7 @@ class ForemanLoop:
         self._open_traj(goal)
         if self.traj is not None:
             result.traj_path = str(self.traj.path)
+        self._restore_from_traj(result)
         self._reset_backoff()
         self._idle_count = 0
         self._carry_action = None

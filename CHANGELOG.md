@@ -2,6 +2,13 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/)，版本号按 SemVer。
 
+## [0.5.1] — 2026-09-02
+
+### Added
+
+- Persist 重启：同一条 traj jsonl 上，从最新到最旧恢复上次 `coach_instruction` / `last_problem`；若其后有 `user_denied` 则不恢复 instruction（避免无视用户拒绝）。只读、不编造记忆、不调用教练、不改写 jsonl。
+- Smoke：`persist-resume-ok`。原有 token 保留（含 `traj-ok` / `live-bench-skip-ok`）。不宣称三项目标已证明。
+
 ## [0.5.0] — 2026-09-01
 
 ### Added

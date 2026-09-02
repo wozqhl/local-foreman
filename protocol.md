@@ -69,7 +69,7 @@ Coach 回复：`{"verdict":"accept|revise|halt","instruction":"1-2 sentences"}`�
 
 ## 轨迹
 
-一条 append-only jsonl。路径：`LOCAL_FOREMAN_TRAJ`，默认 `<cwd>/.local-foreman/traj.jsonl`。进程重启后接着写。
+一条 append-only jsonl。路径：`LOCAL_FOREMAN_TRAJ`，默认 `<cwd>/.local-foreman/traj.jsonl`。进程重启后接着写。重启后从同一 jsonl 恢复最近一次 `coach_instruction`（若其后无 `user_denied`），并同步 `last_problem`；只读恢复，不编造记忆、不调用教练。
 
 每条含：`ts` `seq` `kind` `message` `goal`，以及当时的 tool observation / ticket / coach reply（若有）。
 

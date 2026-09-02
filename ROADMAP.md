@@ -62,6 +62,8 @@
 
 - [x] live bench skip on non-Darwin / missing mlx / missing COACH_API_KEY (no load, no API)
 - [x] Smoke：`live-bench-skip-ok`
+- [x] persist 跨进程恢复 coach_instruction（同一 traj jsonl）
+- [x] Smoke：`persist-resume-ok`
 - [ ] Apple Silicon live numbers (not this box; do not invent scores)
 
 ## 明确不做

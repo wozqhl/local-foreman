@@ -40,6 +40,8 @@ from local_foreman.loop import (
 from local_foreman.self_verify import score_pending_claim
 from local_foreman.ticket import problem_is_clear
 from local_foreman.traj import (
+    EVENT_COACH_INSTRUCTION,
+    EVENT_USER_DENIED,
     EVENT_WORK,
     Trajectory,
     coach_stats,
@@ -361,6 +363,124 @@ def _smoke_traj(root: Path, errors: list[str]) -> None:
         errors.append("traj-ok: disk/memory kinds diverge " + str(disk_kinds) + " vs " + str(mem_kinds))
         return
     print("traj-ok")
+
+
+
+def _smoke_persist_resume(root: Path, errors: list[str]) -> None:
+    """Cross-process: restore coach_instruction from the same traj jsonl."""
+    tmp = Path(tempfile.mkdtemp(prefix="lf-persist-resume-"))
+    path = tmp / "traj.jsonl"
+    push_cmd = "git " + "push" + " origin HEAD"
+    goal1 = "smoke: persist resume first"
+    w1 = MockWorker(script=[
+        WorkerAction(kind="tool", tool="read", args={"path": "README.md"}, thought="safe read"),
+        WorkerAction(kind="tool", tool="shell", args={"cmd": push_cmd}, thought="fake remote"),
+        WorkerAction(kind="done", thought="after persist"),
+    ])
+    c1 = MockCoach(["continue"])
+    loop1 = ForemanLoop(
+        worker=w1,
+        coach=c1,
+        root=root,
+        max_steps=10,
+        persist=True,
+        idle=False,
+        traj_path=path,
+    )
+    res1 = loop1.run(goal1)
+    if not path.is_file():
+        errors.append("persist-resume-ok: jsonl not written")
+        return
+    loaded = Trajectory(path)
+    kinds = [e.get("kind") for e in loaded.entries]
+    if EVENT_COACH_INSTRUCTION not in kinds:
+        errors.append("persist-resume-ok: missing coach_instruction got=" + str(kinds))
+        return
+    first_instruction = ""
+    for e in reversed(loaded.entries):
+        if e.get("kind") != EVENT_COACH_INSTRUCTION:
+            continue
+        first_instruction = str(e.get("instruction") or e.get("message") or "").strip()
+        if first_instruction:
+            break
+    if not first_instruction:
+        errors.append("persist-resume-ok: empty coach_instruction on disk")
+        return
+    if not (loop1.coach_instruction or "").strip():
+        errors.append("persist-resume-ok: run1 loop.coach_instruction empty")
+        return
+
+    # Fresh process-like loop: instruction must be empty until run() restores.
+    w2 = MockWorker(script=[WorkerAction(kind="done", thought="second goal done")])
+    c2 = MockCoach(["halt"])
+    loop2 = ForemanLoop(
+        worker=w2,
+        coach=c2,
+        root=root,
+        max_steps=6,
+        persist=True,
+        idle=False,
+        traj_path=path,
+    )
+    if loop2.coach_instruction:
+        errors.append("persist-resume-ok: coach_instruction set before run")
+        return
+    res2 = loop2.run("smoke: persist resume second")
+    if loop2.coach_instruction != first_instruction:
+        errors.append(
+            "persist-resume-ok: restored instruction mismatch "
+            + repr(loop2.coach_instruction)
+            + " vs "
+            + repr(first_instruction)
+        )
+        return
+    sys2 = w2.last_system or ""
+    if COACH_INSTRUCTION_HEADER not in sys2:
+        errors.append("persist-resume-ok: missing COACH_INSTRUCTION_HEADER in system")
+        return
+    if first_instruction not in sys2:
+        errors.append("persist-resume-ok: first instruction not in worker system")
+        return
+    if c2.calls:
+        errors.append("persist-resume-ok: run2 should not ask coach, calls=" + str(len(c2.calls)))
+        return
+
+    # Negative: user_denied after coach_instruction → do not restore.
+    denied = Trajectory(path, goal="smoke: denied")
+    denied.append(
+        {
+            "kind": EVENT_USER_DENIED,
+            "message": "用户拒绝高风险继续，不执行 git/remote",
+            "instruction": first_instruction,
+            "problem": loop1.last_problem or "",
+            "state": "待确认",
+        }
+    )
+    w3 = MockWorker(script=[WorkerAction(kind="done", thought="after denied")])
+    c3 = MockCoach(["halt"])
+    loop3 = ForemanLoop(
+        worker=w3,
+        coach=c3,
+        root=root,
+        max_steps=4,
+        persist=True,
+        idle=False,
+        traj_path=path,
+    )
+    if loop3.coach_instruction:
+        errors.append("persist-resume-ok: denied case pre-run not empty")
+        return
+    loop3.run("smoke: persist resume denied")
+    if loop3.coach_instruction:
+        errors.append(
+            "persist-resume-ok: restored after user_denied: "
+            + repr(loop3.coach_instruction)
+        )
+        return
+    if COACH_INSTRUCTION_HEADER in (w3.last_system or ""):
+        errors.append("persist-resume-ok: header present after user_denied")
+        return
+    print("persist-resume-ok")
 
 
 def _smoke_idle(root: Path, errors: list[str]) -> None:
@@ -3044,6 +3164,7 @@ def run_smoke() -> int:
         print("oss-ok")
 
     _smoke_traj(root, errors)
+    _smoke_persist_resume(root, errors)
     _smoke_idle(root, errors)
     _smoke_compact(errors)
     _smoke_retrieve(root, errors)

@@ -217,6 +217,7 @@ low-read-ok
 work-line-ok
 demo-root-ok
 live-bench-skip-ok
+persist-resume-ok
 ```
 
 含义：
@@ -251,6 +252,7 @@ live-bench-skip-ok
 28. `work-line-ok` — 一次性 CLI 打印 `work:` 行；唯一工具失败不是 `goal complete`
 29. `demo-root-ok` — cwd 没有 README.md 时用自带示例，不写用户磁盘
 30. `live-bench-skip-ok` — `bench --live` 在非 Apple Silicon 上 skip（不 load、不打教练）
+31. `persist-resume-ok` — 同一 traj jsonl 跨进程恢复上次 `coach_instruction`（其后有 `user_denied` 则不恢复）
 
 GitHub Actions（[`.github/workflows/smoke.yml`](.github/workflows/smoke.yml)）在 Ubuntu + Python 3.11 上只跑这一条 mock smoke。
 
